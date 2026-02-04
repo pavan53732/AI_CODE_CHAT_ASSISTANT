@@ -1,0 +1,327 @@
+// AI Code Chat Assistant - Complete Prisma Schema
+// Based on the specification document
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// PROJECT MEMORY SYSTEM
+// ============================================================================
+
+model Project {
+  id            String   @id @default(cuid())
+  name          String
+  rootPath      String   @unique
+  createdAt     DateTime @default(now())
+  lastAccessed  DateTime @updatedAt
+  totalFiles    Int      @default(0)
+  summary       String?  // AI-generated project summary
+  technologies  String?  // JSON array: ["Next.js", "TypeScript", ...]
+  architecture  String?  // AI-generated architecture description
+  userInterests String?  // JSON array of topics user cares about
+
+  conversations  Conversation[]
+  fileAnalyses  FileAnalysis[]
+  fileChunks    FileChunk[]
+  patterns      CodePattern[]
+  issues        IssueMemory[]
+  userBehavior  UserBehavior?
+  decisionLocks DecisionLock[]
+  wikiPages     WikiPage[]
+  checkpoints   IndexCheckpoint[]
+  indexVersions IndexVersion[]
+  fileChecksums FileChecksum[]
+}
+
+model Conversation {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  timestamp     DateTime @default(now())
+  messages      String   // JSON array of messages
+  contextFiles  String   // JSON array of file paths
+  topics        String?  // JSON array of topics discussed
+  summary       String?  // AI-generated summary
+  keyInsights   String?  // JSON array of important insights
+
+  @@index([projectId])
+  @@index([timestamp])
+}
+
+model FileAnalysis {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filePath        String
+  analyzedAt      DateTime @default(now())
+  summary         String
+  purpose         String?
+  keyFunctions    String?  // JSON array
+  dependencies    String?  // JSON array of file paths
+  dependents      String?  // JSON array of file paths
+  patterns        String?  // JSON array
+  issues          String?  // JSON array
+  suggestions     String?  // JSON array
+  complexity      Int      @default(5) // 1-10
+  lastModifiedAt  DateTime
+  analysisCount   Int      @default(1)
+
+  chunks          FileChunk[]
+  checkpoint      IndexCheckpoint?
+
+  @@unique([projectId, filePath])
+  @@index([projectId])
+}
+
+model FileChunk {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fileAnalysisId  String
+  fileAnalysis    FileAnalysis @relation(fields: [fileAnalysisId], references: [id], onDelete: Cascade)
+
+  // Chunk info
+  chunkNumber     Int
+  chunkIndex     Int
+  chunkCount      Int
+  content        String
+  startOffset    Int
+  endOffset      Int
+
+  createdAt       DateTime @default(now())
+
+  @@index([fileAnalysisId])
+  @@index([fileAnalysisId, chunkNumber])
+}
+
+model CodePattern {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pattern     String
+  files       String   // JSON array of file paths
+  frequency   Int      @default(1)
+  type        String   // 'architecture' | 'design' | 'coding' | 'anti-pattern'
+  lastSeen    DateTime @updatedAt
+
+  @@unique([projectId, pattern, type])
+  @@index([projectId])
+}
+
+model IssueMemory {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filePath    String?
+  type        String
+  severity    String
+  description String
+  location    String?  // JSON: { file, line }
+  status      String   @default("open")
+  discoveredAt DateTime @default(now())
+  mentionedIn String?  // JSON array of conversation IDs
+
+  @@index([projectId])
+  @@index([status])
+}
+
+model UserBehavior {
+  id                    String   @id @default(cuid())
+  projectId             String   @unique
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commonQuestions       String?  // JSON array
+  frequentlyAccessedFiles String? // JSON array
+  preferredFileTypes    String?  // JSON array
+  topicsOfInterest      String?  // JSON array
+  lastUpdated           DateTime @updatedAt
+}
+
+// ============================================================================
+// CONTEXT ORCHESTRATOR SYSTEM
+// ============================================================================
+
+model DecisionLock {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // The Lock
+  rule        String
+  scope       String   // 'architecture' | 'security' | 'ux' | 'performance' | 'ai'
+  priority    String   // 'hard' | 'soft'
+  source      String   // 'user' | 'system'
+
+  // Metadata
+  context     String?
+  reasoning   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Enforcement
+  violations  Int      @default(0)
+  lastViolation DateTime?
+
+  // Active status
+  active      Boolean  @default(true)
+
+  @@unique([projectId, rule, scope])
+  @@index([projectId])
+  @@index([scope, priority])
+  @@index([active])
+}
+
+model ViolationLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  decisionLockId String
+  rule        String
+  scope       String
+  violationType String // 'contradiction' | 'omission' | 'misinterpretation'
+  aiOutput    String
+  corrected   Boolean
+  correction  String?
+  timestamp   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([decisionLockId])
+  @@index([timestamp])
+}
+
+// ============================================================================
+// WIKI SYSTEM
+// ============================================================================
+
+model WikiPage {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Page info
+  title       String
+  slug        String   // URL-friendly identifier
+  category    String   // overview, architecture, modules, api, etc.
+
+  // Content
+  content     String   // Markdown content
+  metadata    String?  // JSON: { generatedAt, version, ... }
+
+  // Relationships
+  relatedFiles String?  // JSON array of related file paths
+  linksTo     String?  // JSON array of linked wiki pages
+
+  // Versioning
+  indexVersionId String?
+  indexVersion   IndexVersion? @relation(fields: [indexVersionId], references: [id], onDelete: SetNull)
+  version     Int      @default(1)
+  generatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // User edits
+  userNotes   String?  // User annotations (separate from generated content)
+
+  @@unique([projectId, slug])
+  @@index([projectId])
+  @@index([category])
+  @@index([indexVersionId])
+}
+
+model WikiCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  order       Int      @default(0) // Display order
+}
+
+// ============================================================================
+// INDEXING SYSTEM - CRASH SAFETY & VERSIONING
+// ============================================================================
+
+model IndexCheckpoint {
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fileAnalysisId    String?  @unique
+  fileAnalysis      FileAnalysis? @relation(fields: [fileAnalysisId], references: [id], onDelete: SetNull)
+
+  // Checkpoint state
+  stage             String   // 'scanning' | 'analyzing' | 'chunking' | 'complete' | 'failed'
+  processedFiles    String   // JSON array of file paths
+  failedFiles       String   // JSON array of file paths
+  lastProcessedFile String?
+  batchSize         Int      @default(100)
+
+  // Timing
+  startTime         DateTime @default(now())
+  lastUpdateTime    DateTime @updatedAt
+  completedAt       DateTime?
+
+  // Error handling
+  errorMessage      String?
+  retryCount        Int      @default(0)
+
+  @@index([projectId])
+  @@index([stage])
+  @@index([startTime])
+}
+
+model IndexVersion {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Version info
+  version     Int
+  createdAt   DateTime @default(now())
+
+  // Index stats
+  fileCount   Int      @default(0)
+  totalSize   BigInt   @default(0)
+  chunkCount  Int      @default(0)
+
+  // Relationships
+  wikiPages   WikiPage[]
+
+  @@unique([projectId, version])
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// MIGRATION SYSTEM
+// ============================================================================
+
+model MigrationLog {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  appliedAt   DateTime @default(now())
+  checksum    String
+  success     Boolean  @default(true)
+  durationMs  Int?
+  errorMessage String?
+
+  @@index([appliedAt])
+}
+
+// ============================================================================
+// CHECKSUM SYSTEM
+// ============================================================================
+
+model FileChecksum {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filePath    String
+  checksum    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, filePath])
+  @@index([projectId])
+  @@index([filePath])
+}

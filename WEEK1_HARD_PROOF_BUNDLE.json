@@ -1,0 +1,34 @@
+{
+  "manifest": {
+    "runId": "0fec01aa-a527-4d86-a39b-f843c1137e96",
+    "timestamp": "2026-02-04T07:45:16.929Z",
+    "host": {
+      "arch": "x64",
+      "cpus": 8,
+      "cpuModel": "Intel(R) Core(TM) i5-10300H CPU @ 2.50GHz",
+      "memory": 34188722176,
+      "platform": "win32",
+      "nodeVersion": "v24.3.0",
+      "diskType": "SSD",
+      "fsType": "NTFS",
+      "systemCommandOutput": "wmic failed: Command failed: wmic logicaldisk get caption,filesystem,drivetype,size\n'wmic' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n",
+      "hostFingerprint": "9d6f9b7ba3dea509f186191e03a7cf337eba331e6fd992f05e79ddc893d432c5"
+    },
+    "config": {
+      "batchSize": 50,
+      "killPoints": 10,
+      "workerCount": 8,
+      "killPointSeed": "5shmbtgcz23",
+      "runtimeFlags": []
+    }
+  },
+  "negativePathProof": {
+    "testName": "checksum_validation_enforcement",
+    "guardDisabled": true,
+    "failureInjected": true,
+    "detectionStatus": "BYPASSED_AS_EXPECTED",
+    "timestamp": "2026-02-04T07:45:17.736Z",
+    "exitCode": 0
+  },
+  "evidence": []
+}

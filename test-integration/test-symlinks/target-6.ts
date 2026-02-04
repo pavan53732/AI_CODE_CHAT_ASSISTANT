@@ -1,0 +1,1 @@
+export const target6 = 6;
