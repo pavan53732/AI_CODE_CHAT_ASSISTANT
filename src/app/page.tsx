@@ -592,6 +592,12 @@ export default function AIChatApp() {
 
       const data = await response.json();
 
+      // Check if the response was not OK (error from API)
+      if (!response.ok) {
+        const errorMessage = data.message || data.error || 'An error occurred while processing your request';
+        throw new Error(errorMessage);
+      }
+
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -1622,6 +1628,14 @@ export default function AIChatApp() {
       <SettingsDialog
         open={showSettingsDialog}
         onOpenChange={setShowSettingsDialog}
+        onSettingsSaved={() => {
+          loadFileTree();
+          toast({
+            title: 'Settings applied',
+            description: 'File tree will be reloaded with new settings',
+            variant: 'default',
+          });
+        }}
       />
 
       {/* File Viewer Modal */}

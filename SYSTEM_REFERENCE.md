@@ -57,13 +57,13 @@ A Decision Lock is a persistent rule that defines an architectural or technical 
 
 The system automatically compares all AI outputs against Active Decision Locks.
 
-1.  Detection: AI output is scanned for contradictions with HARD rules.
-2.  Enforcement:
+1. Detection: AI output is scanned for contradictions with HARD rules.
+2. Enforcement:
 
 - **Block**: Prohibits the AI from presenting the response.
 - **Auto-Correct**: Prompts the AI to re-evaluate its answer.
 
-3.  Logging: All violations are recorded in the `ViolationLedger`.
+3. Logging: All violations are recorded in the `ViolationLedger`.
 
 ```prisma
 model DecisionLock {
@@ -81,9 +81,13 @@ model DecisionLock {
 }
 ```
 
-### 2.3 Success Strategy: Consistency First
-
 By injecting Decision Locks into **every single prompt**, we eliminate the "Context Refresh" problem. Even if the chat history is purged, the core architectural rules remain as the first lines of the System Prompt.
+
+**Conflict Resolution Strategy**:
+In the event of metadata contradictions:
+
+- **Index vs. Wiki/Memory**: **Index** (The Ground Truth) always wins.
+- **Wiki Rebuild**: If a conflict is detected, the relevant Wiki page is flagged for an immediate automated rebuild.
 
 ### 2.4 Governance Interfaces
 
@@ -112,7 +116,18 @@ interface ConflictDetector {
 
 The Context Orchestrator is the gateway through which all AI requests must pass. It is responsible for building the prompt, allocating tokens, and validating the response.
 
-### 3.1 The 5-Section Prompt Protocol
+### 3.1 The Orchestration Flow
+
+Every request follows a mandatory 6-step lifecycle to ensure governance:
+
+1. Request Capture: User sends a code question or command.
+2. Context Assembly: Orchestrator queries the Code Index and Memory System in parallel.
+3. Prompt Construction: Orchestrator builds the Markdown prompt using the 5-section protocol.
+4. Model Execution: The prompt is sent to the LLM as a stateless request.
+5. Output Validation: The response is intercepted by the `ConflictDetector`.
+6. Drift Correction: If a violation is found, the response is recycled back to step 3 with an added "Correction Instruction."
+
+### 3.2 The 5-Section Prompt Protocol
 
 To maintain total control over AI behavior, every prompt built by the system **must** follow this strict structural sequence:
 
@@ -124,7 +139,7 @@ To maintain total control over AI behavior, every prompt built by the system **m
 | **4. RELEVANT MEMORY** | Past issues, detected patterns, user habits | Learned project history from the Memory System.    |
 | **5. USER TASK**       | The current prompt/request                  | The specific action the user wants the AI to take. |
 
-### 3.2 Token Budget Management
+### 3.3 Token Budget Management
 
 Tokens are the system's currency. The `TokenBudgetManager` dynamically allocates tokens based on the model's tier (Small: 4K, Standard: 8K, Large: 16K).
 
@@ -191,12 +206,14 @@ The system learns from every interaction and stores it in a multi-layered local 
 | **Long-term**  | Architectural patterns, recurring issues | Permanent (indexed)    |
 
 **Weighted Priority Scoring**:
-The orchestrator prioritizes memory based on relevance scores:
+The orchestrator prioritizes context retrieval using the following relevance weights:
 
-- **Project Summary**: 1.0 (Highest)
-- **Open Issues**: 0.8
-- **Patterns**: 0.6
-- **History**: 0.4
+- **Project Summary**: 1.0 (Critical Truth)
+- **Selected File Context**: 0.9 (User Intent)
+- **Detected Issues/Bugs**: 0.8 (Problem Awareness)
+- **Architectural Patterns**: 0.6 (Style Alignment)
+- **Historical Decisions**: 0.4 (Log Continuity)
+- **User Habits/Interests**: 0.2 (Personalization)
 
 ### 4.3 Wiki System: The Narrative Knowledge
 
@@ -217,12 +234,13 @@ The interface is designed as an **AI Control Room**, prioritizing visual clarity
 
 All UI components **must** conform to the following theme tokens. Ad-hoc colors are strictly prohibited.
 
-- **Theme**: Dark-first (Dark mode is the primary experience).
+- **Theme**: Dark-first (Dark mode is the primary experience). **Indigo/Blue "SaaS default" colors are strictly prohibited.**
 - **Core Palette**:
-  - **Background**: Deep Slate (`#0B0E14`)
-  - **Surface**: Midnight Blue (`#121826`)
-  - **Primary Accent**: Electric Cyan (`#00F2FF`) - Used for AI state and active highlights.
-  - **Secondary Accent**: Soft Amber (`#FFB800`) - Used for warnings and Decision Locks.
+- **Background**: Deep Slate (`#0B0E14`)
+- **Surface**: Midnight Blue (`#121826`)
+- **Primary Accent**: Electric Cyan (`#00F2FF`) - Used for AI pulse and active highlights.
+- **Secondary Accent**: Soft Amber (`#FFB800`) - Used for warnings and Decision Locks.
+- **Iconography**: Powered by **Lucide React** with custom system symbols for Decision Locks.
 - **Typography**:
   - **Headings**: Space Grotesk (Tech-forward feel).
   - **Body**: Inter (Readability).
@@ -242,16 +260,33 @@ The system uses a persistent 3-panel layout to ensure the user never loses conte
 
 A mandatory **System Status Bar** must be visible at all times, communicating the "Health" of the AI context:
 
-- **Indexing Status**: Real-time progress of the Code Indexer.
-- **Memory Health**: Visual indicator of how much long-term memory is active.
-- **Decision Lock Count**: Number of HARD rules currently being enforced.
+- **Indexing Status**: Real-time progress percentage and item count of the Code Indexer.
+- **Memory Health**: Visual indicator (Active/Idle/Pruning) of long-term memory state.
+- **Decision Lock Count**: Number of HARD rules currently being enforced in the prompt.
 - **AI Pulse**: A micro-animation (Electric Cyan) indicating the AI is "thinking" or "observing."
+- **Visual Drift Prevention**: Mandatory automated check against the Design System constraints before any screen render.
 
 ### 5.4 Motion & Glassmorphism
 
-- **Motion**: All transitions must use Framer Motion with `duration: 0.2` and `ease: "circOut"`.
-- **Glassmorphism**: Restricted to secondary surfaces (hover cards, status tooltips).
+- **Motion**: Framer Motion is the standard. Timings: 150ms (micro), 300ms (standard), 500ms (complex). Default easing: `circOut` (0.2s).
+- **Glassmorphism**: Restricted to secondary surfaces (menus, tooltips). Must maintain a minimum background blur of `12px` and a border color with `0.1` opacity.
 - **Syntax Highlighting**: Powered by **Shiki** (server-side) with caching based on file hash.
+
+### 5.5 Keyboard Shortcuts (Interaction Registry)
+
+The system prioritizes keyboard-driven navigation for power users. All shortcuts **must** be implemented with global listener guards to prevent conflicts with native OS commands.
+
+| Category         | Shortcut       | Action                                    |
+| :--------------- | :------------- | :---------------------------------------- |
+| **View Control** | `Ctrl + K`     | Toggle 3-Panel ↔ 4-Panel (Wiki) layout    |
+|                  | `Ctrl + L`     | Toggle Left Sidebar (File Explorer)       |
+|                  | `Ctrl + + / -` | Dynamically adjust application font size  |
+| **Search**       | `Ctrl + F`     | Open Advanced Search Overlay              |
+|                  | `Escape`       | Close Search, Modal, or File Viewer       |
+| **Operation**    | `Ctrl + S`     | Save current application/project settings |
+|                  | `Ctrl + R`     | Force refresh of the File Tree & Index    |
+|                  | `Ctrl + N`     | Initialize a new Chat Conversation        |
+|                  | `Ctrl + Enter` | Send message in Chat Interface            |
 
 ---
 

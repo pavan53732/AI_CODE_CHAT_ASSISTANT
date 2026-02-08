@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { X, Keyboard, Type, Palette, Database, Save, Settings as SettingsIcon } from 'lucide-react';
+import { X, Keyboard, Type, Palette, Database, Save, Settings as SettingsIcon, FolderOpen } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -11,6 +11,7 @@ import { toast } from '@/hooks/use-toast';
 interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSettingsSaved?: () => void;
 }
 
 interface KeyboardShortcut {
@@ -20,14 +21,15 @@ interface KeyboardShortcut {
   action: string;
 }
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, onSettingsSaved }: SettingsDialogProps) {
   const [settings, setSettings] = useState({
-    rootPath: process.env.PROJECT_ROOT_PATH || '/home/z/my-project',
+    rootPath: '',
     theme: 'dark' as 'auto' | 'light' | 'dark',
     fontSize: 'medium' as 'small' | 'medium' | 'large',
     memoryRetentionDays: 90,
     autoIndex: true,
   });
+  const [isLoading, setIsLoading] = useState(false);
 
   const [shortcuts, setShortcuts] = useState<KeyboardShortcut[]>([
     { key: 'k', ctrl: true, shift: false, action: 'Toggle panels' },
@@ -37,18 +39,71 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     { key: 'Escape', ctrl: false, shift: false, action: 'Close dialogs' },
   ]);
 
-  const handleSaveSettings = () => {
-    toast({
-      title: 'Settings saved',
-      description: 'Your settings have been saved',
-      variant: 'default',
-    });
-    onOpenChange(false);
+  // Load settings when dialog opens
+  useEffect(() => {
+    if (open) {
+      loadSettings();
+    }
+  }, [open]);
+
+  const loadSettings = async () => {
+    try {
+      const response = await fetch('/api/settings');
+      if (response.ok) {
+        const data = await response.json();
+        setSettings(prev => ({
+          ...prev,
+          rootPath: data.rootPath || '',
+          theme: data.theme || 'dark',
+          autoIndex: data.autoIndex !== undefined ? data.autoIndex : true,
+          memoryRetentionDays: data.memoryRetentionDays || 90,
+        }));
+      }
+    } catch (error) {
+      console.error('Error loading settings:', error);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rootPath: settings.rootPath,
+          theme: settings.theme,
+          autoIndex: settings.autoIndex,
+          memoryRetentionDays: settings.memoryRetentionDays,
+        }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Settings saved',
+          description: 'Your settings have been saved. Refresh the page to apply changes.',
+          variant: 'default',
+        });
+        onSettingsSaved?.();
+        onOpenChange(false);
+      } else {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to save settings');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error saving settings',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleResetSettings = () => {
     setSettings({
-      rootPath: process.env.PROJECT_ROOT_PATH || '/home/z/my-project',
+      rootPath: '',
       theme: 'dark',
       fontSize: 'medium',
       memoryRetentionDays: 90,
@@ -59,6 +114,27 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       description: 'Settings have been reset to defaults',
       variant: 'default',
     });
+  };
+
+  const handleBrowseFolder = async () => {
+    // Create a file input element
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.webkitdirectory = true;
+    input.directory = true;
+    input.onchange = (e) => {
+      const files = (e.target as HTMLInputElement).files;
+      if (files && files.length > 0) {
+        // Get the directory path from the first file
+        const path = files[0].path || files[0].webkitRelativePath;
+        if (path) {
+          // Extract directory from full path
+          const dirPath = path.substring(0, path.lastIndexOf('/')) || path.substring(0, path.lastIndexOf('\\'));
+          setSettings(prev => ({ ...prev, rootPath: dirPath || path }));
+        }
+      }
+    };
+    input.click();
   };
 
   return (
