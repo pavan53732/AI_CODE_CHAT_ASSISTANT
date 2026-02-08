@@ -1,7 +1,4 @@
-# AI Code Chat Assistant: System Reference (v1.0)
-
-> [!IMPORTANT]
-> This document is the **Canonical Source of Truth** for the AI Code Chat Assistant. It consolidates all technical and architectural decisions into a unified, machine-enforceable reference. It overrules all previous documentation.
+# AI Code Chat Assistant: System Reference
 
 ---
 
