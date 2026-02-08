@@ -109,17 +109,23 @@ The system autonomously identifies and persists new architectural constraints fr
 
 #### 2.3.1 Extraction Heuristics
 
-Rules are elevated from "observations" to **HARD Locks** if they meet at least two of the following criteria:
+Rules are calculated using a weighted scoring model. A rule is elevated to a **HARD Lock** if the cumulative score $C \ge 0.9$.
 
-1. **Explicit Imperatives**: Use of absolute keywords (e.g., `must`, `never`, `always`, `forbidden`, `requirement`).
-2. **Repetition Threshold**: The same architectural pattern or constraint is mentioned or applied in **≥3 distinct conversation turns**.
-3. **User Confirmation**: The user explicitly replies with "correct", "yes", or "save this" after the AI proposes a rule.
-4. **Project Genesis**: The rule is defined in a `README.md`, `CONTRIBUTING.md`, or a configuration file (e.g., `tsconfig.json`).
+| Criterion                | Weight | Logic                                                                 |
+| :----------------------- | :----- | :-------------------------------------------------------------------- |
+| **Explicit Imperatives** | 0.6    | Binary: 1.0 if keywords like `must`/`never` are found.                |
+| **Repetition Threshold** | 0.3    | Incremental: 0.1 per turn (max 0.3 at 3 turns).                       |
+| **User Confirmation**    | 1.0    | **Override**: If the user says "yes" or "save", $C$ is forced to 1.0. |
+| **Project Genesis**      | 0.5    | Binary: 1.0 if found in core project files.                           |
+
+> [!NOTE]
+> User Confirmation is a hard override. If the user explicitly rejects a proposed rule, the score $C$ is reset to 0.0 regardless of other criteria. This ensures extraction is deterministic and user-governed.
 
 #### 2.3.2 Extraction Authority
 
-- **AI Proposal**: The AI may only _propose_ HARD locks. No HARD lock is truly active until the user confirms or the heuristic score exceeds a threshold of 0.9.
-- **SOFT Locks**: The AI can autonomously create SOFT locks for stylistic preferences (e.g., "prefers early returns").
+- **AI Proposal**: The AI may only _propose_ HARD locks.
+- **Heuristic Enforcement**: If $C \ge 0.9$ without confirmation, the lock is staged as **Staged-Hard** (viewable in UI) until the user takes action.
+- **SOFT Locks**: AI-autonomously created with a heuristic score $0.4 \le C < 0.9$.
 - **Conflict Resolution**: User-created locks always overrule AI-extracted locks. Duplicate locks are merged, prioritizing the most specific scope.
 
 ### 2.4 SOFT Rule Enforcement Policy
@@ -133,13 +139,13 @@ Unlike HARD rules, SOFT rules guide AI behavior without hard blocking. Their enf
   - **ALLOW**: The response is delivered, but the violation is logged in the `ViolationLedger`.
   - **LOG**: Every SOFT violation is tracked for future "Low-Noise" proactivity analysis.
 
-#### 2.4.4 Violation Escalation & Noise Suppression
+#### 2.4.5 Issue-to-Governance Feedback Loop
 
-The system learns from repeated violations to harden governance over time:
+The system maintains a bi-directional feedback loop between technical debt (`IssueMemory`) and governance (`DecisionLocks`):
 
-1. **Escalation Threshold**: If a **SOFT** rule is violated **≥3 times** within a 24-hour window, the system automatically prompts the user to elevate it to a **HARD Lock**.
-2. **Noise Suppression**: Identical violation alerts are suppressed for **60 minutes** after the first notification to prevent UI fatigue.
-3. **Audit Readiness**: All suppressed alerts are still recorded in the `ViolationLedger` for background pattern analysis.
+1. **Governance from Debt**: If **CRITICAL** or **HIGH** issues are recurrently detected in a module (≥3 instances), the AI automatically proposes a **HARD Decision Lock** to proactively prevent the root-cause anti-pattern.
+2. **Confidence-Driven Elevation**: Resolved issues increase the "Heuristic Confidence" of existing related Decision Locks by +0.1 per resolution.
+3. **Governance Downgrade**: If a rule has zero violations and zero associated issues for **60 days**, the AI may suggest downgrading a HARD lock to a SOFT lock to reduce developmental friction.
 
 ### 2.5 Governance Interfaces
 
@@ -193,8 +199,22 @@ Tokens are the system's currency. The `TokenBudgetManager` dynamically allocates
 | **Large**    | 16K tokens  | 11,200        | 4,800           |
 | **Ultra**    | 32K+ tokens | 70%           | 30%             |
 
-> [!NOTE]
-> For Ultra (32K+) models, the 70/30 split remains the architectural default unless overruled by a model-specific plugin.
+### 3.3.1 Ultra Tier Plugin Overrides
+
+For models in the **Ultra Tier** (32K+), third-party or system plugins may overrule the default orchestration logic.
+
+#### Override Scope
+
+Plugins are permitted to modify:
+
+1. **Total Budget**: Extend beyond the 32K baseline based on model capability.
+2. **ContextSplits**: Reallocate the % split between Section 3 (INDEX) and Section 4 (MEMORY).
+3. **Retrieval Weights**: Adjust Section 4.2.2 weighting based on the model's "Needle-in-a-Haystack" performance.
+
+#### Authority Logic
+
+- **Scope**: Overrides are applied **per-model** across all projects.
+- **Persistence**: Overrides are stored in the Global Configuration and are loaded only when the specific Ultra-tier model is active.
 
 **Context Allocation Split**:
 
@@ -215,8 +235,18 @@ To maintain token efficiency and long-term project recall, the Orchestrator enfo
 1. **Sliding Window**: Only the **last 25 messages** are kept in active context.
 2. **Truncation Point**: Truncation occurs **before** the prompt build. Older messages are purged from the working buffer.
 3. **Archival**: Messages older than 25 are moved to **Short-term Memory (SQLite)**.
-4. **Summary Injection**: Summaries of archived conversations are permanently stored and injected into **Section 4 (MEMORY)** of the prompt protocol if relevant.
-5. **Retrieval**: Archived conversations are indexed for semantic retrieval scoring (Weight: 0.4).
+4. **Structured Summary**:
+   - **Format**: All archived conversations are summarized into a structured JSON fragment: `{ "id": string, "summary": string, "decisions": string[], "issues_raised": string[], "files_touched": string[] }`.
+   - **Token Limit**: Each summary must not exceed **200 tokens**.
+5. **Retrieval**: Archived summaries are indexed for semantic retrieval scoring (Weight: 0.4).
+
+### 3.5 AI Proactivity Suppression & Follow-up Rules
+
+When the AI emits a proactive message (Section 4.2.4), it is bound by the **Silence Guarantee**:
+
+- **Atomic Message**: A proactive event **must** result in exactly one message. The AI is forbidden from sending multiple sequential messages or follow-up questions autonomously.
+- **User Gate**: The AI must wait for a direct user response before continuing the conversation.
+- **UI Context**: Proactive alerts must clearly state the **Heuristic Source** (e.g., "Critical Issue Detected" vs. "Pattern Optimization").
 
 ### 3.5 Conflict Detection Engine
 
@@ -383,6 +413,17 @@ $$S = (W_{type} \times S_{semantic}) + (W_{recency} \times f(age)) + S_{bonus}$$
   - +0.1 for every 5 occurrences of the fact in codebase patterns.
   - -0.3 if the fact is associated with a resolved `IssueMemory`.
 - **Normalization**: All partial scores are normalized to a $[0, 1]$ range before fusion.
+
+#### 4.1.6 Deterministic Tie-Break Rules
+
+In cases where two or more facts share the exact same final score $S$, the system applies a deterministic tie-break sequence:
+
+1. **Source Fidelity**: **Index Fact** (Canonical) > **Issue Memory** > **Wiki** > **Archive**.
+2. **Lexical Order**: Source **File Path** (A-Z).
+3. **Symbol Position**: Lower **Line Number** in the file.
+4. **Data Integrity**: **Content Hash** (MD5/SHA) as the final fallback.
+
+This sequence ensures that for any given state, retrieval results are 100% deterministic.
 
 #### 4.1.6 File Handling Fallback Rules
 
@@ -777,15 +818,31 @@ interface AppState {
 - **Read-Only Access**: The system never modifies source code directly without explicit user approval.
 - **Local-First**: All metadata (Index, Memory, Wiki) is stored on the user's machine.
 - **Hub Encryption**: Supports **AES-256-GCM** encryption for the entire SQLite database using a passphrase-derived key (Argon2id).
+
+#### 4.5.4 Version Skew & Safety Policies
+
+To ensure project integrity during bundle transport across different system versions:
+
+- **Version Authority**: If `Bundle.Version > System.Version`, the import is **Rejected**. Users are prompted to update the system before proceeding.
+- **Unknown Fields**: If a bundle contains unknown schema fields (from a newer version), the system must **Safe-Ignore** those fields while preserving all canonical metadata.
+- **Verification Gate**: Every import must pass a **Sanity Check** (schema validation + checksum match) before any database mutation occurs.
+
+---
+
 - **Data Portability**: Users can export their project intelligence as a signed, compressed **`.ai-project-bundle`** (SHA-256 signature).
 
-### 6.5 Network Governance (WFP)
+### 6.5 Network Governance (WFP & OS Scope)
 
-For enterprise security, the system implements a **Windows Filtering Platform (WFP)** driver for strict network quarantine:
+For enterprise security, the system implements a tiered Network Governance policy:
 
-- **Primary**: Bundled WFP Callout Driver (`z-quarantine.sys`) for kernel-mode packet inspection.
-- **Fallback**: User-mode WFP API for basic port-blocking if the driver installation is restricted.
+| Platform    | Enforcement Layer                           | Strictness             |
+| :---------- | :------------------------------------------ | :--------------------- |
+| **Windows** | **WFP Callout Driver** (`z-quarantine.sys`) | **HIGH** (Kernel-mode) |
+| **macOS**   | User-mode Proxy / App Firewall              | **MEDIUM** (User-mode) |
+| **Linux**   | IPtables / Namespace isolation              | **MEDIUM** (User-mode) |
+
 - **Policy**: All AI-related traffic is routed through a managed socket; non-compliant outbound connections are dropped instantly.
+- **Access Control**: Network Governance is an **Opt-in** feature for personal use but **Mandatory** for Enterprise Workspaces (governed by Decision Locks).
 
 ### 6.6 Implementation Roadmap (Phased)
 
