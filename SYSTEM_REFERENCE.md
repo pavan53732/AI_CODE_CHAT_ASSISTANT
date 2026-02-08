@@ -103,7 +103,26 @@ In the event of metadata contradictions:
 - **Index vs. Wiki/Memory**: **Index** (The Ground Truth) always wins.
 - **Wiki Rebuild**: If a conflict is detected, the relevant Wiki page is flagged for an immediate automated rebuild.
 
-### 2.3 Governance Interfaces
+### 2.3 Decision Lock Extraction Policy
+
+The system autonomously identifies and persists new architectural constraints from User/AI interactions:
+
+1. **Extraction Trigger**: Triggers whenever the user explicitly confirms an architectural choice or when the AI detects a recurring pattern that meets the "Hard Constraint" heuristic.
+2. **Lock Criteria**: To qualify as a Decision Lock, a rule must be **technical**, **scope-defined**, and **machine-verifiable**.
+3. **Authority logic**: User-created locks always overrule AI-extracted locks. Duplicate locks are merged, prioritizing the most specific scope.
+
+### 2.4 SOFT Rule Enforcement Policy
+
+Unlike HARD rules, SOFT rules guide AI behavior without hard blocking. Their enforcement lifecycle is as follows:
+
+- **AI Suggestion**: AI recommends a SOFT rule during conversation.
+- **Verification**: If violated, the system triggers a **Suggestion Alert** in the Chat UI.
+- **Action**:
+  - **WARN**: The user is notified of the violation.
+  - **ALLOW**: The response is delivered, but the violation is logged in the `ViolationLedger`.
+  - **LOG**: Every SOFT violation is tracked for future "Low-Noise" proactivity analysis.
+
+### 2.5 Governance Interfaces
 
 ```typescript
 interface ConflictDetector {
@@ -148,25 +167,39 @@ To maintain total control over AI behavior, every prompt built by the system **m
 
 Tokens are the system's currency. The `TokenBudgetManager` dynamically allocates tokens based on the model's tier.
 
-| Tier     | Total Budget | Context (70%) | Reasoning (30%) |
-| :------- | :----------- | :------------ | :-------------- |
-| Standard | 8K tokens    | 5,600         | 2,400           |
-| High     | 16K tokens   | 11,200        | 4,800           |
-| Ultra    | 32K+ tokens  | 22,400+       | 9,600+          |
+| Tier         | Budget      | Context (70%) | Reasoning (30%) |
+| :----------- | :---------- | :------------ | :-------------- |
+| **Small**    | 4K tokens   | 2,800         | 1,200           |
+| **Standard** | 8K tokens   | 5,600         | 2,400           |
+| **Large**    | 16K tokens  | 11,200        | 4,800           |
+| **Ultra**    | 32K+ tokens | 70%           | 30%             |
+
+> [!NOTE]
+> For Ultra (32K+) models, the 70/30 split remains the architectural default unless overruled by a model-specific plugin.
 
 **Context Allocation Split**:
 
 ```typescript
 const ContextSplits = {
-  SYSTEM_RULES: 0.15, // 15% (Primary Governance)
+  SYSTEM_RULES: 0.15, // 15% (Decision Locks)
   PROJECT_SUMMARY: 0.15, // 15%
   INDEX_FACTS: 0.4, // 40% (Technical Grounding)
   MEMORY: 0.2, // 20% (Learned History)
-  USER_TASK: 0.1, // 10% (The prompt)
+  USER_TASK: 0.1, // 10% (The Request)
 };
 ```
 
-### 3.4 Conflict Detection Engine
+### 3.4 Conversation Sliding Window & Truncation
+
+To maintain token efficiency and long-term project recall, the Orchestrator enforces a strict conversation lifecycle:
+
+1. **Sliding Window**: Only the **last 25 messages** are kept in active context.
+2. **Truncation Point**: Truncation occurs **before** the prompt build. Older messages are purged from the working buffer.
+3. **Archival**: Messages older than 25 are moved to **Short-term Memory (SQLite)**.
+4. **Summary Injection**: Summaries of archived conversations are permanently stored and injected into **Section 4 (MEMORY)** of the prompt protocol if relevant.
+5. **Retrieval**: Archived conversations are indexed for semantic retrieval scoring (Weight: 0.4).
+
+### 3.5 Conflict Detection Engine
 
 The `ConflictDetector` sits between the AI and the user, performing a real-time audit of the AI's output against active Decision Locks.
 
@@ -314,11 +347,24 @@ async function incrementalReindex(projectPath: string) {
 }
 ```
 
-#### Performance Standards
+#### 4.1.4 Indexing Mode Thresholds
 
-- **Indexed Queries**: <100ms for full-text matched lookups.
-- **Dependency Traversal**: <50ms for 1st-degree relationship lookup.
-- **Index Latency**: Incremental update <500ms for a single file edit.
+The system dynamically adjusts its indexing strategy based on the codebase size to optimize resource consumption:
+
+| Repository Size        | Mode       | Execution Strategy                               |
+| :--------------------- | :--------- | :----------------------------------------------- |
+| **< 1,000 Files**      | Instant    | Full indexing on Project Open (Main Thread)      |
+| **1,000–10,000 Files** | Fast       | Parallel full scan + Quick reindex (Worker Pool) |
+| **> 10,000 Files**     | Enterprise | Chunked indexing + Priority queue + Multi-worker |
+
+#### 4.1.5 Search Relevance & Ranking Rules
+
+The system employs a weighted fusion model for search results, ensuring the most semantically relevant facts surface first:
+
+- **Ranking Priority**: **Index Facts** (Ground Truth) > **Deep Memory** (Learned) > **Wiki Narrative** (Doc).
+- **Positive Weighting**: Exact symbol matches, active file context, and high-frequency code patterns.
+- **Negative Weighting**: Old conversation fragments (>30 days), deleted file metadata, and soft rule violations.
+- **Tie-Break Rule**: In the event of a score tie, the **Index Fact** (most recent file hash) always wins.
 
 ### 4.2 Deep Memory System: The Learned History
 
@@ -385,18 +431,81 @@ The orchestrator prioritizes context retrieval using the following relevance wei
 - **Historical Decisions**: 0.4 (Context Flow)
 - **User Coding Habits**: 0.2 (Personalization)
 
-### 4.3 Wiki System: The Narrative Knowledge
+#### 4.2.3 Auto-Analysis Trigger Matrix
+
+The system monitors user activity and system state to trigger automated analysis actions:
+
+| Trigger          | Action                    | Target Memory Layer        |
+| :--------------- | :------------------------ | :------------------------- |
+| **File Select**  | Quick Summary             | Short-term (File Analysis) |
+| **Idle 30s**     | Deep Symbol Analysis      | Long-term (Knowledge Base) |
+| **Manual Scan**  | Full Index & Pattern Scan | Global (Project Summary)   |
+| **Index Finish** | Wiki Generation           | Narrative (Wiki)           |
+
+#### 4.2.4 AI Proactivity Guardrails (HARD)
+
+To prevent "AI Noise" and maintain a focused development environment, the AI is suppressed from speaking proactively unless specific technical thresholds are met:
+
+1. **High-Severity Discovery**: Proactive alert if a security vulnerability or critical logic failure is detected.
+2. **Structural Pattern Detection**: AI speaks if a recurring pattern/anti-pattern is found in **≥3 separate files**.
+3. **Behavioral Optimization**: AI suggests a workflow improvement if a repeated manual task is detected across sessions.
+4. **Otherwise**: The AI must remain silent and only respond to direct user queries in the Chat panel.
+
+### 4.3 Post-Response Memory Mutation Contract
+
+The system treats every AI response as a learning event. After a response is delivered to the user, the Context Orchestrator executes a mandatory **6-step mutation pipeline** to update the system body:
+
+1. **Insight Extraction**: Identify new symbols, patterns, or decisions in the session.
+2. **Project Memory Update**: Update the project-wide architectural summary.
+3. **File Analysis Refresh**: Update the analysis records for all files mentioned in the response.
+4. **Violation Log Sync**: Persist any hard/soft rule violations to the `ViolationLedger`.
+5. **Issue Creation/Closure**: Detect if the response creates a new "Issue Memory" or closes an existing one.
+6. **Conversation Archival**: Summarize the exchange and store it in the sliding window / archive.
+
+### 4.4 Wiki System: The Narrative Knowledge
 
 The Wiki is an auto-generated documentation layer that bridges the gap between raw code and human intent.
 
-- **Auto-Generation**: Triggered automatically after a full project index completes.
-- **Narrative Flow**: Generates Project Overviews, Module Docs, and Dependency Maps.
-- **Context Grounding**: Every wiki page is bi-directionally linked to the source code.
-- **User Annotations**: AI suggestions are stored in separate blocks; user edits are **never** overwritten.
+#### 4.4.1 Wiki Mutation Rules (HARD)
+
+To protect user-authored content, the Wiki system adheres to the following mutation rules:
+
+1. **Section-Scoped Updates**: AI updates must only target **AI-generated sections**. User-authored sections are treated as immutable by the AI.
+2. **Annotation Preservation**: AI suggestions must be presented in separate `> [!NOTE]` or `## AI Insights` blocks and never overwrite user text.
+3. **Draft Mode**: All AI-proposed Wiki changes must be staged in a "Draft" or "Review" state before merging into the canonical Wiki page.
+
+#### 4.4.2 File Type Processing Matrix
+
+The system applies differentiated processing strategies based on file type to maximize context quality:
+
+| File Type                         | Category            | Strategy                                    |
+| :-------------------------------- | :------------------ | :------------------------------------------ |
+| `.ts`, `.js`, `.py`, `.go`, `.rs` | **Source Code**     | Full parsing + Symbol extraction + Chunking |
+| `.md`, `.txt`, `.rst`             | **Documentation**   | Semantic chunking + Deep summarization      |
+| `.json`, `.yaml`, `.toml`, `.csv` | **Structured Data** | Schema/Key extraction + Selective indexing  |
+| `.png`, `.exe`, `.dll`, `.zip`    | **Binary**          | Metadata only (Size, Type, Hash, CreatedAt) |
+
+### 4.5 Data Portability: The Bundle Manifest
+
+The `.ai-project-bundle` is a signed, versioned export of the project's cumulative intelligence.
+
+#### 4.5.1 Bundle Manifest Scope
+
+A valid bundle must contain the following manifest components:
+
+- **Index Metadata**: Full symbol database and dependency graph.
+- **Deep Memory**: All patterns, issues, and summarized conversation histories.
+- **Wiki Repository**: All Markdown pages (including user annotations).
+- **Governance**: Active and historical Decision Locks and Violation Logs.
+- **Config**: Project-specific AI settings and token budget preferences.
+
+#### 4.5.2 Versioning & Compatibility
+
+- **Forward Compatibility**: Version $N$ of the system must be able to import bundles from Version $N-1$.
+- **Partial Import**: Users may choose to import only specific layers (e.g., "Memory Only" or "Wiki Only").
+- **Signature Validation**: Bundles are rejected if the SHA-256 manifest signature fails verification.
 
 ---
-
-## 5. Interaction: The Design System (The Skin)
 
 The interface is designed as an **AI Control Room**, prioritizing visual clarity, system state communication, and motion over decoration.
 
