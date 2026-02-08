@@ -1,7 +1,7 @@
 # AI Code Chat Assistant: System Reference (v1.0)
 
 > [!IMPORTANT]
-> This document is the **Canonical Source of Truth** for the AI Code Chat Assistant. It consolidates all previous specifications and architectural decisions into a unified, machine-enforceable reference. This document overrules all legacy specifications, including `AI_CODE_CHAT_ASSISTANT_SPEC.md`.
+> This document is the **Canonical Source of Truth** for the AI Code Chat Assistant. It consolidates all technical and architectural decisions into a unified, machine-enforceable reference. It overrules all previous documentation.
 
 ---
 
@@ -57,11 +57,11 @@ A Decision Lock is a persistent rule that defines an architectural or technical 
 
 The system automatically compares all AI outputs against Active Decision Locks.
 
-1. Detection: AI output is scanned for contradictions with HARD rules.
-2. Enforcement:
-   - **Block**: Prohibits the AI from presenting the response.
-   - **Auto-Correct**: Prompts the AI to re-evaluate its answer.
-3. Logging: All violations are recorded in the `ViolationLedger`.
+1. **Detection**: AI output is scanned for contradictions with HARD rules.
+2. **Enforcement**:
+   - **BLOCK**: Prohibits the AI from presenting the response.
+   - **AUTO-CORRECT**: Prompts the AI to re-evaluate its answer.
+3. **Logging**: All violations are recorded in the `ViolationLedger`.
 
 ```prisma
 model DecisionLock {
@@ -72,10 +72,26 @@ model DecisionLock {
   scope       String   // global | module:name | file:path
   isActive    Boolean  @default(true)
   violations  Int      @default(0)
+  lastViolation DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([projectId, scope])
+}
+
+model ViolationLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  decisionLockId String
+  rule        String
+  scope       String
+  violationType String // contradiction | omission | misinterpretation
+  aiOutput    String
+  corrected   Boolean
+  correction  String?
+  timestamp   DateTime @default(now())
+
+  @@index([projectId, timestamp])
 }
 ```
 
@@ -87,24 +103,15 @@ In the event of metadata contradictions:
 - **Index vs. Wiki/Memory**: **Index** (The Ground Truth) always wins.
 - **Wiki Rebuild**: If a conflict is detected, the relevant Wiki page is flagged for an immediate automated rebuild.
 
-### 2.4 Governance Interfaces
+### 2.3 Governance Interfaces
 
 ```typescript
-interface ViolationLog {
-  ruleId: string;
-  scope: string; // global | file | module
-  type: 'hard' | 'soft';
-  violation: string; // The violating snippet
-  correction: string; // The suggested fix
-  timestamp: Date;
-}
-
 interface ConflictDetector {
   /** Returns list of violations found in AI output */
-  detectViolations(aiOutput: string, activeLocks: DecisionLock[]): ViolationLog[];
+  detectViolations(aiOutput: string, activeLocks: DecisionLock[]): Promise<ViolationLog[]>;
 
   /** Enforces corrections by generating a "Fixup Instruction" */
-  enforce(violations: ViolationLog[]): string;
+  enforce(violations: ViolationLog[]): Promise<string>;
 }
 ```
 
@@ -139,22 +146,23 @@ To maintain total control over AI behavior, every prompt built by the system **m
 
 ### 3.3 Token Budget Management
 
-Tokens are the system's currency. The `TokenBudgetManager` dynamically allocates tokens based on the model's tier (Small: 4K, Standard: 8K, Large: 16K).
+Tokens are the system's currency. The `TokenBudgetManager` dynamically allocates tokens based on the model's tier.
 
-**The 70/30 Rule**:
-
-- **70% (Context)**: Reserved for Sections 1–4 of the prompt.
-- **30% (Reasoning)**: Reserved for the AI's response buffer.
+| Tier     | Total Budget | Context (70%) | Reasoning (30%) |
+| :------- | :----------- | :------------ | :-------------- |
+| Standard | 8K tokens    | 5,600         | 2,400           |
+| High     | 16K tokens   | 11,200        | 4,800           |
+| Ultra    | 32K+ tokens  | 22,400+       | 9,600+          |
 
 **Context Allocation Split**:
 
 ```typescript
 const ContextSplits = {
-  SYSTEM_RULES: 0.15, // 15% (Primary Priority)
+  SYSTEM_RULES: 0.15, // 15% (Primary Governance)
   PROJECT_SUMMARY: 0.15, // 15%
-  INDEX_FACTS: 0.4, // 40% (Deep technical grounding)
-  MEMORY: 0.2, // 20% (Learned context)
-  USER_TASK: 0.1, // 10% (The request itself)
+  INDEX_FACTS: 0.4, // 40% (Technical Grounding)
+  MEMORY: 0.2, // 20% (Learned History)
+  USER_TASK: 0.1, // 10% (The prompt)
 };
 ```
 
@@ -241,8 +249,11 @@ model CodeIndex {
   filePath    String   @unique
   fileType    String   // .ts, .py, etc.
   lineCount   Int
+  size        Int
   checksum    String   // MD5/SHA for change detection
   indexedAt   DateTime @default(now())
+  symbols     SymbolIndex[]
+  dependencies DependencyIndex[]
 }
 
 model SymbolIndex {
@@ -250,12 +261,35 @@ model SymbolIndex {
   name        String   // function_name, class_name
   type        String   // 'function' | 'class' | 'interface'
   filePath    String
+  codeIndex   CodeIndex @relation(fields: [filePath], references: [filePath])
   line        Int
   signature   String?
   docComment  String?
 
   @@index([name])
   @@index([filePath])
+}
+
+model DependencyIndex {
+  id          String   @id @default(cuid())
+  filePath    String
+  codeIndex   CodeIndex @relation(fields: [filePath], references: [filePath])
+  importName  String
+  resolvedPath String?
+  isExternal  Boolean  @default(false)
+
+  @@index([filePath])
+  @@index([importName])
+}
+
+model FileRelationship {
+  id          String   @id @default(cuid())
+  sourcePath  String
+  targetPath  String
+  type        String   // 'import' | 'require' | 'calls'
+  strength    Float    @default(1.0)
+
+  @@unique([sourcePath, targetPath, type])
 }
 ```
 
@@ -328,15 +362,28 @@ model CodePattern {
 }
 ```
 
-**Weighted Priority Scoring**:
-The orchestrator prioritizes context retrieval using the following relevance weights:
+#### Memory Retention Policies
 
-- **Project Summary**: 1.0 (Critical Truth)
-- **Selected File Context**: 0.9 (User Intent)
-- **Detected Issues/Bugs**: 0.8 (Problem Awareness)
-- **Architectural Patterns**: 0.6 (Style Alignment)
-- **Historical Decisions**: 0.4 (Log Continuity)
-- **User Habits/Interests**: 0.2 (Personalization)
+The system implements a tiered retention strategy to balance context depth with storage efficiency:
+
+| Memory Type         | Policy    | Pruning Trigger                 |
+| :------------------ | :-------- | :------------------------------ |
+| **Project Summary** | Permanent | Never (Manual update only)      |
+| **Decision Locks**  | Permanent | Deleted only by user            |
+| **File Analysis**   | Volatile  | File checksum change            |
+| **Code Patterns**   | Long-term | 60 days of non-usage            |
+| **Active Chat**     | Rolling   | >25 messages (Slide to archive) |
+| **Archived Chat**   | Periodic  | >30 days (Summarize & Delete)   |
+
+**Weighted Priority Scoring**:
+The orchestrator prioritizes context retrieval using the following relevance weights (1.0 = Max):
+
+- **Project Summary & Vision**: 1.0 (The "Why")
+- **Selected File Context**: 0.9 (Current Focus)
+- **Detected Issues & Conflict Logs**: 0.8 (Technical Debt)
+- **Verified Architectural Patterns**: 0.6 (Style Alignment)
+- **Historical Decisions**: 0.4 (Context Flow)
+- **User Coding Habits**: 0.2 (Personalization)
 
 ### 4.3 Wiki System: The Narrative Knowledge
 
@@ -471,7 +518,7 @@ The system is built for local-first performance and enterprise-grade code intell
 
 ### 6.1 Core Technology Stack
 
-- **Frontend**: Next.js 14.2+ (Stable Target - _overrules legacy v16 spec_).
+- **Frontend**: Next.js 14.2+ (Stable Target).
 - **Styling**: Tailwind CSS v3.4+, shadcn/ui.
 - **Backend**: Next.js API Routes (Node.js 20+).
 - **ORM/DB**: Prisma w/ SQLite (Local-first).
@@ -509,35 +556,33 @@ The frontend uses a single-source-of-truth store to manage the complex applicati
 interface AppState {
   // File System & Navigation
   fileTree: TreeNode[];
-  selectedFiles: string[];
-  currentPath: string;
+  selectedFiles: string[]; // Set of file paths
+  currentPath: string; // Active file being viewed
 
   // Intelligence & Memory
-  messages: Message[];
-  projectMemory: ProjectMemory | null;
+  messages: Message[]; // Session history
+  projectMemory: ProjectMemory | null; // Patterns & Issues
   fileAnalyses: Map<string, FileAnalysis>;
-  patterns: CodePattern[];
-  issues: IssueMemory[];
+  violations: ViolationLog[]; // Active governance violations
 
   // Code Indexing & Search
   codeIndex: {
     isIndexing: boolean;
-    indexingProgress: Progress | null;
+    indexingProgress: number; // 0-100
     totalSymbols: number;
-    totalDependencies: number;
+    lastIndexTime: Date;
   };
   searchResults: SearchResult[];
 
   // Wiki System
   wikiPages: WikiPage[];
-  currentWikiPage: WikiPage | null;
   isGeneratingWiki: boolean;
 
   // Actions
-  startIndexing: (type: 'full' | 'incremental') => Promise<void>;
-  searchCode: (query: string, f?: Filters) => Promise<SearchResult[]>;
-  loadWikiPage: (slug: string) => Promise<void>;
+  startIndexing: (mode: 'full' | 'incremental') => Promise<void>;
+  searchCode: (query: string, options?: SearchOptions) => Promise<void>;
   validateResponse: (output: string) => Promise<ValidationResult>;
+  applyCorrection: (correction: string) => void;
 }
 ```
 
@@ -545,16 +590,16 @@ interface AppState {
 
 - **Read-Only Access**: The system never modifies source code directly without explicit user approval.
 - **Local-First**: All metadata (Index, Memory, Wiki) is stored on the user's machine.
-- **Optional Hub Encryption**: Supports AES-256 encryption for the entire SQLite database using a passphrase-derived key.
-- **Data Portability**: Users can export their project intelligence as a signed `.ai-project-bundle`.
+- **Hub Encryption**: Supports **AES-256-GCM** encryption for the entire SQLite database using a passphrase-derived key (Argon2id).
+- **Data Portability**: Users can export their project intelligence as a signed, compressed **`.ai-project-bundle`** (SHA-256 signature).
 
 ### 6.5 Network Governance (WFP)
 
 For enterprise security, the system implements a **Windows Filtering Platform (WFP)** driver for strict network quarantine:
 
-- **Primary**: Bundled WFP Callout Driver for kernel-mode packet inspection.
-- **Fallback**: User-mode WFP API for basic port-blocking if the driver is unavailable.
-- **Policy**: All AI-related traffic is routed through a managed socket; non-compliant outbound connections are dropped.
+- **Primary**: Bundled WFP Callout Driver (`z-quarantine.sys`) for kernel-mode packet inspection.
+- **Fallback**: User-mode WFP API for basic port-blocking if the driver installation is restricted.
+- **Policy**: All AI-related traffic is routed through a managed socket; non-compliant outbound connections are dropped instantly.
 
 ### 6.6 Implementation Roadmap (Phased)
 
@@ -564,53 +609,51 @@ The development is divided into four critical phases, prioritizing the "stateles
 
 ##### Sprint 0: Context Orchestrator (The Brain)
 
-- [ ] Implement DecisionLock database model & `ViolationLedger`.
-- [ ] Build `ConflictDetector` & `TokenBudgetManager` classes.
-- [ ] Implement PromptBuilder with 5-section protocol.
-- [ ] Add decision lock extraction and injection logic.
-- [ ] Create REST endpoints for prompt management and validation.
+- [ ] Implement `DecisionLock` & `ViolationLog` models.
+- [ ] Build `ConflictDetector` engine & `TokenBudgetManager`.
+- [ ] Implement 5-section prompt assembly logic.
+- [ ] **Validation**: Successfully block a hard-coded architectural violation.
 
 ##### Sprint 1: Cognitive Infrastructure (The Body)
 
-- [ ] Build SQLite FTS5 Indexer with symbols/imports/exports extraction.
-- [ ] Implement 4-layer memory storage (Prisma/SQLite).
-- [ ] Build incremental reindexing logic and background file scanner.
-- [ ] Implement dependency graph analyzer and search API.
+- [ ] Build SQLite FTS5 Indexer & Dependency Graph analyzer.
+- [ ] Implement tiered Memory retention system.
+- [ ] Build incremental background scanner (Chokidar).
+- [ ] **Validation**: Index 10k files in < 5 minutes.
 
 ##### Sprint 2: UI/UX & Design System
 
-- [ ] Implement App Shell with 3-panel layout and Focus Mode.
-- [ ] Integrate CSS Tokens and shadcn/ui.
-- [ ] Add Framer Motion transitions and background progress indicators.
-- [ ] Build Keyboard Shortcut registry and interaction listeners.
+- [ ] Implement 3-panel layout with Framer Motion.
+- [ ] Integrate CSS Tokens and shiki highlighting.
+- [ ] Build Keyboard Shortcut registry.
+- [ ] **Validation**: Audit pass on Visual Drift Checklist (Section 5.7).
 
 ##### Sprint 3: Wiki & Proactive Insights
 
-- [ ] Implement auto-generation pipeline for documentation.
-- [ ] Build bi-directional linking between Wiki and Source.
-- [ ] Implement low-noise proactive alerting for pattern/issue detection.
+- [ ] Implement auto-documentation pipeline & bi-directional links.
+- [ ] Build low-noise alerting for pattern detection.
+- [ ] **Validation**: Wiki auto-generates 5+ module pages correctly.
 
 #### Phase 2: Native Capabilities (Desktop)
 
 ##### Sprint 4: Electron Integration
 
-- [ ] Initialize Electron wrapper and native file system bridge.
-- [ ] Implement native window management and menu bar integration.
-- [ ] Package and bundle for Windows distribution.
+- [ ] Initialize Electron wrapper & native FS bridge.
+- [ ] Window management & tray integration.
 
 ##### Sprint 5: Network Governance (WFP)
 
-- [ ] Implement WFP Callout Driver for network quarantine.
-- [ ] Build user-mode fallback API for non-driver environments.
+- [ ] Implement `z-quarantine.sys` WFP Driver.
+- [ ] User-mode API fallback shell.
 
 #### Phase 3: Enterprise & Security
 
-##### Sprint 6: Advanced Encryption
+##### Sprint 6: Advanced Encryption & Export
 
-- [ ] Implement AES-256 database encryption.
-- [ ] Build signed `.ai-project-bundle` export/import utility.
+- [ ] Implement AES-256-GCM database encryption.
+- [ ] Build signed `.ai-project-bundle` export utility.
 
-##### Sprint 7: Scale & Performance
+##### Sprint 7: Scale & Multi-Model
 
-- [ ] Multi-worker indexing support for 100K+ files.
-- [ ] Implement vector similarity search for semantic retrieval.
+- [ ] Multi-worker indexing support (100K+ files).
+- [ ] Vector similarity search integration.
