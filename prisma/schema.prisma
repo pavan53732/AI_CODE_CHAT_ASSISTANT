@@ -135,11 +135,24 @@ model UserBehavior {
   id                    String   @id @default(cuid())
   projectId             String   @unique
   project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId                String   @default("default")
+  
+  // Raw interaction data
+  interactions          String?  // JSON array of all interactions
+  preferences           String?  // JSON object with user preferences
+  
+  // Computed fields (kept for backward compatibility)
   commonQuestions       String?  // JSON array
   frequentlyAccessedFiles String? // JSON array
   preferredFileTypes    String?  // JSON array
   topicsOfInterest      String?  // JSON array
+  
+  // Timestamps
   lastUpdated           DateTime @updatedAt
+  lastActive            DateTime @default(now())
+  
+  @@index([projectId])
+  @@index([userId])
 }
 
 // ============================================================================

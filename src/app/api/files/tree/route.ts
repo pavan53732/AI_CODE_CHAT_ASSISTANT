@@ -13,8 +13,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const relativePath = searchParams.get('path') || '';
 
-    // Root path (default to current project)
-    const rootPath = process.env.PROJECT_ROOT_PATH || '/home/z/my-project';
+    // Root path (default to current working directory)
+    const rootPath = process.env.PROJECT_ROOT_PATH || process.cwd();
 
     // Resolve full path and prevent directory traversal
     const fullPath = path.resolve(rootPath, relativePath);

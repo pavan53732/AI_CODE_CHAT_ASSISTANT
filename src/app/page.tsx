@@ -1,7 +1,7 @@
 'use client';
 // Rebuild trigger - chat API updated to use /api/chat2
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card } from '@/components/ui/card';
@@ -18,6 +18,9 @@ import { IndexManagementDialog } from '@/components/IndexManagementDialog';
 import { WikiManagementDialog } from '@/components/WikiManagementDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { MarkdownWithHighlight } from '@/components/MarkdownWithHighlight';
+import { SmartSuggestions } from '@/components/SmartSuggestions';
+import { ProactiveInsights } from '@/components/ProactiveInsights';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Folder,
   FolderOpen,
@@ -44,6 +47,9 @@ import {
   ArrowDown,
   RotateCcw,
   ChevronRight,
+  Menu,
+  PanelLeft,
+  PanelRight,
 } from 'lucide-react';
 
 // Types
@@ -115,6 +121,9 @@ export default function AIChatApp() {
   const [showIndexDialog, setShowIndexDialog] = useState(false);
   const [showWikiDialog, setShowWikiDialog] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [showMobileWiki, setShowMobileWiki] = useState(false);
+  const isMobile = useIsMobile();
   const [wikiPages, setWikiPages] = useState<WikiPage[]>([]);
   const [selectedWikiPage, setSelectedWikiPage] = useState<WikiPage | null>(null);
   const [wikiSearchQuery, setWikiSearchQuery] = useState('');
@@ -132,6 +141,7 @@ export default function AIChatApp() {
     languages: [],
     dateRange: 'any',
   });
+  const [currentPath, setCurrentPath] = useState<string>('');
   const [systemStatus, setSystemStatus] = useState<SystemStatus>({
     indexing: {
       state: 'idle',
@@ -162,12 +172,106 @@ export default function AIChatApp() {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
 
-  // Load file tree on mount
+  // Auto-index on project open (mandatory)
+  const hasIndexed = useRef(false);
+
   useEffect(() => {
-    loadFileTree();
-    loadProjectMemory();
-    loadWikiPages();
+    const initProject = async () => {
+      // Load file tree first
+      await loadFileTree();
+      
+      // Auto-index if not already done (mandatory)
+      if (!hasIndexed.current) {
+        hasIndexed.current = true;
+        await startAutoIndexing();
+      }
+      
+      loadProjectMemory();
+      loadWikiPages();
+    };
+
+    initProject();
   }, []);
+
+  // Auto-indexing function
+  async function startAutoIndexing() {
+    try {
+      setSystemStatus(prev => ({
+        ...prev,
+        indexing: { state: 'indexing', message: 'Auto-indexing project...' },
+      }));
+
+      const response = await fetch('/api/indexing/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: 'default', path: '' }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Auto-indexing started',
+          description: 'Project is being indexed automatically',
+          variant: 'default',
+        });
+
+        // Poll for completion
+        const checkStatus = setInterval(async () => {
+          const statusRes = await fetch('/api/indexing/status?projectId=default');
+          if (statusRes.ok) {
+            const status = await statusRes.json();
+            if (status.state === 'completed') {
+              clearInterval(checkStatus);
+              setSystemStatus(prev => ({
+                ...prev,
+                indexing: { state: 'completed', message: 'Indexing complete' },
+              }));
+              
+              // Auto-build wiki after indexing (ALWAYS)
+              await startWikiBuild();
+            }
+          }
+        }, 2000);
+      }
+    } catch (error) {
+      console.error('Auto-indexing error:', error);
+      setSystemStatus(prev => ({
+        ...prev,
+        indexing: { state: 'error', message: 'Indexing failed' },
+      }));
+    }
+  }
+
+  // Auto-build wiki after indexing
+  async function startWikiBuild() {
+    try {
+      setSystemStatus(prev => ({
+        ...prev,
+        wiki: { state: 'building', pageCount: 0, lastSync: new Date() },
+      }));
+
+      const response = await fetch('/api/wiki/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: 'default' }),
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Wiki auto-building',
+          description: 'Wiki is being generated from indexed files',
+          variant: 'default',
+        });
+        loadWikiPages();
+        
+        setSystemStatus(prev => ({
+          ...prev,
+          wiki: { state: 'synced', pageCount: prev.wiki.pageCount, lastSync: new Date() },
+        }));
+      }
+    } catch (error) {
+      console.error('Wiki build error:', error);
+    }
+  }
 
   // Load file tree from API
   async function loadFileTree() {
@@ -363,6 +467,51 @@ export default function AIChatApp() {
     }
   };
 
+  // Filter file tree based on search query and current path
+  const getFilteredTree = (nodes: TreeNode[]): TreeNode[] => {
+    // Filter by current path (breadcrumb navigation)
+    let filtered = nodes;
+    if (currentPath) {
+      const findInPath = (nodes: TreeNode[]): TreeNode[] => {
+        for (const node of nodes) {
+          if (node.path === currentPath) {
+            return node.children || [];
+          }
+          if (node.children) {
+            const found = findInPath(node.children);
+            if (found.length > 0) return found;
+          }
+        }
+        return [];
+      };
+      filtered = findInPath(nodes);
+    }
+
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const searchLower = searchQuery.toLowerCase();
+      const filterNode = (node: TreeNode): TreeNode | null => {
+        const matches = node.name.toLowerCase().includes(searchLower);
+        if (node.type === 'file') {
+          return matches ? node : null;
+        }
+        // For directories, check children
+        if (node.children) {
+          const filteredChildren = node.children
+            .map(filterNode)
+            .filter((n): n is TreeNode => n !== null);
+          if (matches || filteredChildren.length > 0) {
+            return { ...node, children: filteredChildren };
+          }
+        }
+        return matches ? node : null;
+      };
+      filtered = filtered.map(filterNode).filter((n): n is TreeNode => n !== null);
+    }
+
+    return filtered;
+  };
+
   // Render tree node
   const renderTreeNode = (node: TreeNode, depth: number = 0) => {
     const isExpanded = expandedFolders.has(node.path);
@@ -383,9 +532,15 @@ export default function AIChatApp() {
           onDoubleClick={() => {
             if (node.type === 'file') {
               openFileForViewing(node.path);
+            } else {
+              // Navigate into folder on double click
+              setCurrentPath(node.path);
+              if (!expandedFolders.has(node.path)) {
+                toggleFolder(node.path);
+              }
             }
           }}
-          title={node.type === 'file' ? 'Click to select, double-click to view' : 'Click to expand/collapse'}
+          title={node.type === 'file' ? 'Click to select, double-click to view' : 'Click to expand/collapse, double-click to navigate'}
         >
           {getFileIcon(node)}
           <span className={`text-sm ${isSelected ? 'text-[#FF6B6B]' : 'text-[rgba(255,255,255,0.7)]'}`}>
@@ -590,13 +745,35 @@ export default function AIChatApp() {
     }, 100);
   };
 
+  // Mobile toggle handlers
+  const handleToggleMobileSidebar = () => {
+    setShowMobileSidebar(!showMobileSidebar);
+    setShowMobileWiki(false);
+  };
+
+  const handleToggleMobileWiki = () => {
+    setShowMobileWiki(!showMobileWiki);
+    setShowMobileSidebar(false);
+  };
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden ai-control-room">
       {/* Header */}
-      <header className="h-14 border-b border-[rgba(255,255,255,0.1)] flex items-center justify-between px-4 ai-surface shrink-0">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-semibold text-[#FFFFFF]">
-            AI Code Chat Assistant
+      <header className="h-14 border-b border-[rgba(255,255,255,0.1)] flex items-center justify-between px-2 sm:px-4 ai-surface shrink-0">
+        <div className="flex items-center gap-2 sm:gap-4">
+          {/* Mobile menu button */}
+          {isMobile && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleToggleMobileSidebar}
+              className="lg:hidden text-[rgba(255,255,255,0.7)] hover:text-white"
+            >
+              <PanelLeft className="w-5 h-5" />
+            </Button>
+          )}
+          <h1 className="text-lg sm:text-xl font-semibold text-[#FFFFFF] truncate">
+            AI Code Chat
           </h1>
           <Separator orientation="vertical" className="h-6" />
           <div className="flex items-center gap-2">
@@ -778,17 +955,45 @@ export default function AIChatApp() {
                     className="w-full h-8 pl-9 pr-3 text-sm bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.1)] rounded-md text-[#FFFFFF] placeholder:text-[rgba(255,255,255,0.3)] focus:outline-none focus:border-[rgba(255,107,107,0.3)] transition-colors"
                   />
                 </div>
+                
+                {/* Breadcrumb Navigation */}
+                {currentPath && (
+                  <div className="flex items-center gap-1 mt-2 text-xs text-[rgba(255,255,255,0.5)]">
+                    <button
+                      onClick={() => setCurrentPath('')}
+                      className="hover:text-[#FF6B6B] transition-colors"
+                    >
+                      Root
+                    </button>
+                    {currentPath.split('/').map((segment, index, arr) => (
+                      <span key={index} className="flex items-center gap-1">
+                        <ChevronRight className="w-3 h-3" />
+                        <button
+                          onClick={() => setCurrentPath(arr.slice(0, index + 1).join('/'))}
+                          className={`hover:text-[#FF6B6B] transition-colors ${index === arr.length - 1 ? 'text-[#FFFFFF]' : ''}`}
+                        >
+                          {segment}
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* File Tree */}
               <ScrollArea className="flex-1 p-2">
-                {fileTree.length > 0 ? (
-                  sortFileTree(fileTree).map(node => renderTreeNode(node))
-                ) : (
-                  <div className="text-center py-8">
-                    <p className="text-sm text-[rgba(255,255,255,0.5)]">Loading files...</p>
-                  </div>
-                )}
+                {(() => {
+                  const filteredTree = getFilteredTree(fileTree);
+                  return filteredTree.length > 0 ? (
+                    sortFileTree(filteredTree).map(node => renderTreeNode(node))
+                  ) : (
+                    <div className="text-center py-8">
+                      <p className="text-sm text-[rgba(255,255,255,0.5)]">
+                        {searchQuery ? 'No files match your search' : 'No files found'}
+                      </p>
+                    </div>
+                  );
+                })()}
               </ScrollArea>
 
               {/* Selected Files Footer */}
@@ -835,6 +1040,30 @@ export default function AIChatApp() {
             maxSize={70}
           >
             <div className="h-full flex flex-col">
+              {/* Smart Suggestions */}
+              {!isMobile && (
+                <div className="px-4 pt-4">
+                  <SmartSuggestions
+                    selectedFiles={selectedFiles}
+                    fileTree={fileTree}
+                    conversationHistory={messages}
+                    onSelectFile={(path) => setSelectedFiles(prev => new Set([...prev, path]))}
+                  />
+                </div>
+              )}
+
+              {/* Proactive Insights */}
+              {!isMobile && (
+                <div className="px-4">
+                  <ProactiveInsights
+                    selectedFiles={selectedFiles}
+                    fileTree={fileTree}
+                    messages={messages}
+                    systemStatus={systemStatus}
+                  />
+                </div>
+              )}
+
               {/* Messages */}
               <ScrollArea className="flex-1 p-4">
                 <div className="max-w-4xl mx-auto space-y-6">

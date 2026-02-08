@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { bundleSecurity, SecureBundle } from '@/lib/security/ProjectBundleSecurity';
 
 /**
  * POST /api/memory/import
@@ -10,7 +11,7 @@ import { db } from '@/lib/db';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { exportData, merge = true } = body;
+    const { exportData, merge = true, password, publicKey } = body;
 
     if (!exportData) {
       return NextResponse.json(
@@ -19,15 +20,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let data = exportData;
+
+    // Check if this is a secure bundle
+    if (exportData.encrypted || exportData.signed) {
+      // Set up decryption if password provided
+      if (password) {
+        bundleSecurity.setEncryptionKey(password);
+      }
+
+      // Extract bundle
+      try {
+        data = bundleSecurity.extractBundle(exportData as SecureBundle, publicKey);
+      } catch (error) {
+        return NextResponse.json(
+          { error: `Bundle extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}` },
+          { status: 400 }
+        );
+      }
+    }
+
     // Validate export data format
-    if (!exportData.version || !exportData.project || !exportData.memories) {
+    if (!data.version || !data.project || !data.memories) {
       return NextResponse.json(
         { error: 'Invalid export data format' },
         { status: 400 }
       );
     }
 
-    const { project, memories, userBehavior, wikiPages } = exportData;
+    // Ensure wiki pages are included (Privacy & Security requirement)
+    if (!data.wikiPages) {
+      console.warn('[API /memory/import] Warning: Import data missing wiki pages');
+    }
+
+    const { project, memories, userBehavior, wikiPages } = data;
     let projectRecord;
 
     if (merge) {

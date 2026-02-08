@@ -1,7 +1,7 @@
 {
   "manifest": {
-    "runId": "0fec01aa-a527-4d86-a39b-f843c1137e96",
-    "timestamp": "2026-02-04T07:45:16.929Z",
+    "runId": "cf83cc80-ef90-4323-b76b-8b2a9329fd14",
+    "timestamp": "2026-02-05T05:27:48.614Z",
     "host": {
       "arch": "x64",
       "cpus": 8,
@@ -11,14 +11,14 @@
       "nodeVersion": "v24.3.0",
       "diskType": "SSD",
       "fsType": "NTFS",
-      "systemCommandOutput": "wmic failed: Command failed: wmic logicaldisk get caption,filesystem,drivetype,size\n'wmic' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n",
-      "hostFingerprint": "9d6f9b7ba3dea509f186191e03a7cf337eba331e6fd992f05e79ddc893d432c5"
+      "systemCommandOutput": "[\r\n    {\r\n        \"MediaType\":  \"SSD\",\r\n        \"BusType\":  \"NVMe\"\r\n    },\r\n    {\r\n        \"MediaType\":  \"SSD\",\r\n        \"BusType\":  \"NVMe\"\r\n    }\r\n]\r\n",
+      "hostFingerprint": "6266eacb23409c8460f88d11cdd9a6671065f81c173d2193d0c684e922452c01"
     },
     "config": {
       "batchSize": 50,
       "killPoints": 10,
       "workerCount": 8,
-      "killPointSeed": "5shmbtgcz23",
+      "killPointSeed": "faopw8wfui4",
       "runtimeFlags": []
     }
   },
@@ -27,8 +27,9 @@
     "guardDisabled": true,
     "failureInjected": true,
     "detectionStatus": "BYPASSED_AS_EXPECTED",
-    "timestamp": "2026-02-04T07:45:17.736Z",
-    "exitCode": 0
+    "timestamp": "2026-02-05T05:27:48.980Z",
+    "exitCode": 1,
+    "stderr": "Checksum validation failed to detect corruption - negative path enforcement broken"
   },
   "evidence": []
 }

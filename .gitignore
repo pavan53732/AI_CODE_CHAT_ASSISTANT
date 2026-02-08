@@ -59,6 +59,7 @@ server.log
 # Bun
 .bun
 bun.lockb
+bun.lock
 
 # IDE
 .vscode/
@@ -84,3 +85,4 @@ benchmark-benchmark-*
 benchmark-results/
 benchmark-hard-proof/
 test-negative-path-*
+benchmark-hard-proof-test/

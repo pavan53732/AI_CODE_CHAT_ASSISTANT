@@ -2,6 +2,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { bundleSecurity } from '@/lib/security/ProjectBundleSecurity';
+
+export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/memory/export
@@ -138,6 +141,30 @@ export async function POST(request: NextRequest) {
       })),
     };
 
+    // Check for encryption/signing options
+    const { encrypt, sign, password, privateKey } = body;
+
+    if (encrypt && password) {
+      bundleSecurity.setEncryptionKey(password);
+    }
+    if (sign && privateKey) {
+      bundleSecurity.setSigningKey(privateKey);
+    }
+
+    // Create secure bundle if encryption or signing requested
+    if (encrypt || sign) {
+      const bundle = bundleSecurity.createBundle(exportData, { encrypt, sign });
+      const bundleJson = JSON.stringify(bundle, null, 2);
+
+      return new NextResponse(bundleJson, {
+        headers: {
+          'Content-Disposition': `attachment; filename="${project.name}.ai-project-bundle"`,
+          'Content-Type': 'application/json',
+        },
+      });
+    }
+
+    // Regular JSON export
     return NextResponse.json(exportData, {
       headers: {
         'Content-Disposition': `attachment; filename="${project.name}-memory-export.json"`,

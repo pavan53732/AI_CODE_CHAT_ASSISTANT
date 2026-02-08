@@ -74,10 +74,38 @@ export async function POST(request: NextRequest) {
     let usedTokens = 1000; // Base system prompt tokens
     const contexts: any[] = [];
 
-    // Add decision locks (highest priority)
+    // FUSION CONTEXT MODEL: Index > Memory > Wiki
+    // Priority 1: Index Facts (Code Context) - 40% of budget
+    const indexBudget = maxTokens * 0.40;
+    let indexTokens = 0;
+    
+    // Add file analyses (Index layer - highest priority)
+    for (const analysis of relevantAnalyses) {
+      const analysisContext = {
+        type: 'index-fact',
+        layer: 'index',
+        priority: 1,
+        data: {
+          filePath: analysis.filePath,
+          summary: analysis.summary,
+          purpose: analysis.purpose,
+          keyFunctions: analysis.keyFunctions ? JSON.parse(analysis.keyFunctions) : [],
+        },
+      };
+      const estimatedTokens = JSON.stringify(analysisContext.data).length / 4;
+      if (indexTokens + estimatedTokens <= indexBudget && usedTokens + estimatedTokens <= maxTokens) {
+        contexts.push(analysisContext);
+        indexTokens += estimatedTokens;
+        usedTokens += estimatedTokens;
+      }
+    }
+
+    // Priority 2: Decision Locks (Rules)
     for (const lock of decisionLocks) {
       const lockContext = {
         type: 'decision-lock',
+        layer: 'rules',
+        priority: 2,
         data: {
           rule: lock.rule,
           scope: lock.scope,
@@ -91,7 +119,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Add project summary
+    // Priority 3: Project Summary
     const projectSummary = {
       name: project.name,
       summary: project.summary,
@@ -101,26 +129,35 @@ export async function POST(request: NextRequest) {
     };
     const projectContext = {
       type: 'project-summary',
+      layer: 'memory',
+      priority: 3,
       data: projectSummary,
     };
     const projectTokens = JSON.stringify(projectSummary).length / 4;
     if (usedTokens + projectTokens <= maxTokens) {
-      contexts.unshift(projectContext);
+      contexts.push(projectContext);
       usedTokens += projectTokens;
     }
+
+    // Priority 4: Memory Layer (Conversations, Patterns, Issues)
+    const memoryBudget = maxTokens * 0.30;
+    let memoryTokens = 0;
 
     // Add relevant conversations
     for (const conv of recentConversations) {
       const convContext = {
         type: 'conversation',
+        layer: 'memory',
+        priority: 4,
         data: {
           summary: conv.summary,
           keyInsights: conv.keyInsights ? JSON.parse(conv.keyInsights) : [],
         },
       };
       const estimatedTokens = JSON.stringify(convContext.data).length / 4;
-      if (usedTokens + estimatedTokens <= maxTokens) {
+      if (memoryTokens + estimatedTokens <= memoryBudget && usedTokens + estimatedTokens <= maxTokens) {
         contexts.push(convContext);
+        memoryTokens += estimatedTokens;
         usedTokens += estimatedTokens;
       }
     }
@@ -128,6 +165,8 @@ export async function POST(request: NextRequest) {
     // Add patterns
     const patternContext = {
       type: 'patterns',
+      layer: 'memory',
+      priority: 4,
       data: patterns.map((p: any) => ({
         pattern: p.pattern,
         type: p.type,
@@ -135,14 +174,17 @@ export async function POST(request: NextRequest) {
       })),
     };
     const patternTokens = JSON.stringify(patternContext.data).length / 4;
-    if (usedTokens + patternTokens <= maxTokens) {
+    if (memoryTokens + patternTokens <= memoryBudget && usedTokens + patternTokens <= maxTokens) {
       contexts.push(patternContext);
+      memoryTokens += patternTokens;
       usedTokens += patternTokens;
     }
 
     // Add issues
     const issuesContext = {
       type: 'issues',
+      layer: 'memory',
+      priority: 4,
       data: issues.map((i: any) => ({
         type: i.type,
         severity: i.severity,
@@ -151,15 +193,47 @@ export async function POST(request: NextRequest) {
       })),
     };
     const issuesTokens = JSON.stringify(issuesContext.data).length / 4;
-    if (usedTokens + issuesTokens <= maxTokens) {
+    if (memoryTokens + issuesTokens <= memoryBudget && usedTokens + issuesTokens <= maxTokens) {
       contexts.push(issuesContext);
+      memoryTokens += issuesTokens;
       usedTokens += issuesTokens;
     }
 
-    // Add user behavior
+    // Priority 5: Wiki Layer - 20% of budget
+    const wikiBudget = maxTokens * 0.20;
+    let wikiTokens = 0;
+
+    // Get wiki pages
+    const wikiPages = await db.wikiPage.findMany({
+      where: { projectId },
+      take: 5,
+    });
+
+    for (const wiki of wikiPages) {
+      const wikiContext = {
+        type: 'wiki',
+        layer: 'wiki',
+        priority: 5,
+        data: {
+          title: wiki.title,
+          category: wiki.category,
+          content: wiki.content.slice(0, 500), // Truncate for context
+        },
+      };
+      const estimatedTokens = JSON.stringify(wikiContext.data).length / 4;
+      if (wikiTokens + estimatedTokens <= wikiBudget && usedTokens + estimatedTokens <= maxTokens) {
+        contexts.push(wikiContext);
+        wikiTokens += estimatedTokens;
+        usedTokens += estimatedTokens;
+      }
+    }
+
+    // Add user behavior (if space permits)
     if (userBehavior) {
       const behaviorContext = {
         type: 'user-behavior',
+        layer: 'memory',
+        priority: 6,
         data: {
           commonQuestions: userBehavior.commonQuestions ? JSON.parse(userBehavior.commonQuestions) : [],
           topicsOfInterest: userBehavior.topicsOfInterest ? JSON.parse(userBehavior.topicsOfInterest) : [],
@@ -171,6 +245,9 @@ export async function POST(request: NextRequest) {
         usedTokens += behaviorTokens;
       }
     }
+
+    // Sort by priority
+    contexts.sort((a, b) => a.priority - b.priority);
 
     // Build final context
     const fullContext = {
