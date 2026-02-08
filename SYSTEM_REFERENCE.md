@@ -1,7 +1,7 @@
 # AI Code Chat Assistant: System Reference (v1.0)
 
 > [!IMPORTANT]
-> This document is the **Canonical Source of Truth** for the AI Code Chat Assistant. It consolidates all previous specifications and architectural decisions into a unified, machine-enforceable reference.
+> This document is the **Canonical Source of Truth** for the AI Code Chat Assistant. It consolidates all previous specifications and architectural decisions into a unified, machine-enforceable reference. This document overrules all legacy specifications, including `AI_CODE_CHAT_ASSISTANT_SPEC.md`.
 
 ---
 
@@ -59,10 +59,8 @@ The system automatically compares all AI outputs against Active Decision Locks.
 
 1. Detection: AI output is scanned for contradictions with HARD rules.
 2. Enforcement:
-
-- **Block**: Prohibits the AI from presenting the response.
-- **Auto-Correct**: Prompts the AI to re-evaluate its answer.
-
+   - **Block**: Prohibits the AI from presenting the response.
+   - **Auto-Correct**: Prompts the AI to re-evaluate its answer.
 3. Logging: All violations are recorded in the `ViolationLedger`.
 
 ```prisma
@@ -452,6 +450,19 @@ The system prioritizes keyboard-driven navigation for power users. All shortcuts
 |                  | `Ctrl + N`     | Initialize a new Chat Conversation        |
 |                  | `Ctrl + Enter` | Send message in Chat Interface            |
 
+### 5.7 Visual Drift Prevention Checklist
+
+Before any UI component or view is committed to the codebase, it must pass this **8-point audit** to prevent visual erosion:
+
+1. **Token Compliance**: Verify all colors use `--color-` variables (no hardcoded styles).
+2. **Typography Guard**: Ensure headings use `Space Grotesk` and body uses `Inter`.
+3. **Motion Hygiene**: Check `framer-motion` timings against Section 5.2.
+4. **Glassmorphism Constraint**: Confirm glass effects only on surfaces with >12px blur.
+5. **Icon Symmetry**: Verify all icons are from `lucide-react` and use theme tokens.
+6. **Status Visibility**: Ensure the System Status Bar is persistent and responsive.
+7. **Contrast Audit**: Check all foreground/background pairs against WCAG AA standards.
+8. **Responsive Integrity**: Validate 3-panel ↔ Focus Mode transition at all break points.
+
 ---
 
 ## 6. Technical Foundations (Infrastructure)
@@ -460,11 +471,12 @@ The system is built for local-first performance and enterprise-grade code intell
 
 ### 6.1 Core Technology Stack
 
-- **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, shadcn/ui.
-- **Backend**: Next.js API Routes, Node.js FS, Prisma (ORM).
-- **Storage**: SQLite (Local-first) for Index, Memory, and Wiki metadata.
-- **AI SDK**: `z-ai-web-dev-sdk` for model interaction and streaming.
-- **Desktop (Phase 2)**: Electron wrapper for native file system access.
+- **Frontend**: Next.js 14.2+ (Stable Target - _overrules legacy v16 spec_).
+- **Styling**: Tailwind CSS v3.4+, shadcn/ui.
+- **Backend**: Next.js API Routes (Node.js 20+).
+- **ORM/DB**: Prisma w/ SQLite (Local-first).
+- **AI SDK**: `z-ai-web-dev-sdk` (v1.2+).
+- **Desktop (Phase 2)**: Electron v30+ wrapper.
 
 ### 6.2 Technical Registry: API & State
 
