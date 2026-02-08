@@ -150,35 +150,72 @@ Tokens are the system's currency. The `TokenBudgetManager` dynamically allocates
 
 **Context Allocation Split**:
 
-- **Decision Locks**: 15% (Primary Priority)
-- **Project Summary**: 5%
-- **Index Facts**: 35% (Deep technical grounding)
-- **Memory Archive**: 25% (Learned context)
-- **User Task**: 20% (The request itself)
+```typescript
+const ContextSplits = {
+  SYSTEM_RULES: 0.15, // 15% (Primary Priority)
+  PROJECT_SUMMARY: 0.15, // 15%
+  INDEX_FACTS: 0.4, // 40% (Deep technical grounding)
+  MEMORY: 0.2, // 20% (Learned context)
+  USER_TASK: 0.1, // 10% (The request itself)
+};
+```
 
-### 3.3 Core Service Interface
+### 3.4 Conflict Detection Engine
+
+The `ConflictDetector` sits between the AI and the user, performing a real-time audit of the AI's output against active Decision Locks.
+
+```typescript
+class ConflictDetector {
+  /** Detects violations in AI output against HARD rules */
+  async detectViolation(aiOutput: string, locks: DecisionLock[]): Promise<ViolationResult> {
+    const hardRules = locks.filter((l) => l.priority === 'HARD' && l.isActive);
+
+    for (const rule of hardRules) {
+      if (this.violatesRule(aiOutput, rule)) {
+        return {
+          violated: true,
+          rule: rule.rule,
+          action: 'BLOCK',
+          correction: `Error: AI violated rule "${rule.rule}". Correction required.`,
+        };
+      }
+    }
+    return { violated: false };
+  }
+}
+```
+
+### 3.5 Core Service Interface
 
 ```typescript
 interface ContextOrchestrator {
   /** Builds the 5-section prompt using dynamic token allocation */
   buildPrompt(request: AIRequest): Promise<string>;
 
-  /** Validates AI output against Decision Locks */
+  /** Orchestrates the 6-step flow from retrieval to conflict detection */
+  execute(request: AIRequest): Promise<AIResponse>;
+
+  /** Validates AI output against Decision Locks (Conflict Detection) */
   validateResponse(output: string): Promise<ValidationResult>;
 
-  /** Extracts new Decision Locks from a confirmed conversation */
+  /** Extracts and persists new Decision Locks from conversation history */
   extractLocks(message: Message): Promise<DecisionLock[]>;
 }
+
+### 3.6 AI Integration Strategy (LLM Skill)
+
+The system leverages the `z-ai-web-dev-sdk` for model-agnostic reasoning.
+
+- **Initialization**: SDK is initialized in the Next.js backend routes with a project-specific identity.
+- **Context Handling**: The Orchestrator pipes the 5-section prompt directly to the SDK’s chat interface.
+- **Conversation State**: History is managed locally (Slide Window) and synced periodically to the SDK session.
+
+**Core AI Capabilities**:
+- **Code Explanation**: Deep analysis of logic and data flow.
+- **Bug Detection**: Identification of logic flaws and security vulnerabilities.
+- **Pattern Recognition**: Discovery of architectural and coding patterns.
+- **Auto-Documentation**: Context-grounded generation of technical references.
 ```
-
-### 3.4 Orchestration Flow
-
-1. **Request Capture**: User sends a code question.
-2. **Context Assembly**: Orchestrator queries the _Code Index_ and _Memory System_.
-3. **Prompt Construction**: Orchestrator builds the Markdown prompt using the 5-section protocol.
-4. **Model Execution**: The prompt is sent to the LLM.
-5. **Output Validation**: The response is intercepted by the `ConflictDetector`.
-6. **Drift Correction**: If a violation is found, the response is recycled back to step 3 with a "Correction Instruction."
 
 ---
 
@@ -188,22 +225,110 @@ The "Body" of the system consists of three interconnected layers that provide th
 
 ### 4.1 Code Indexing System: The Ground Truth
 
-The system automatically indexes all project files to provide precise technical facts.
+The Code Indexing System provides automatic, scalable indexing of all project files (100K+ files) using a multi-stage pipeline and high-performance search engine.
 
-- **Scope**: All source code, tests, docs, configs, and data files (100K+ files).
-- **Technology**: SQLite FTS5 for full-text search + Metadata indexing.
-- **Performance**: Hybrid approach—Indexed queries (<100ms) and Semantic vector search (<300ms).
-- **Incremental Updates**: Uses a hybrid watcher (Chokidar for Electron, 10s polling for Web) to re-index only changed files.
+#### The Indexing Pipeline
+
+1. **File Scanner**: Identifies files, filters ignored directories (`.git`, `node_modules`), and detects changes via Chokidar/Polling.
+2. **Content Extractor**: Reads content and extracts technical metadata (symbols, imports, exports).
+3. **Dependency Analyzer**: Builds a directed import/export graph and maps function call relationships.
+4. **Index Builder**: Commits extracted data to the SQLite FTS5 index and Prisma relational tables.
+5. **Storage Layer**: Persistent storage in `project_index.db`.
+
+#### Code Index Schema (Prisma)
+
+```prisma
+model CodeIndex {
+  id          String   @id @default(cuid())
+  filePath    String   @unique
+  fileType    String   // .ts, .py, etc.
+  lineCount   Int
+  checksum    String   // MD5/SHA for change detection
+  indexedAt   DateTime @default(now())
+}
+
+model SymbolIndex {
+  id          String   @id @default(cuid())
+  name        String   // function_name, class_name
+  type        String   // 'function' | 'class' | 'interface'
+  filePath    String
+  line        Int
+  signature   String?
+  docComment  String?
+
+  @@index([name])
+  @@index([filePath])
+}
+```
+
+#### Incremental Reindexing Logic
+
+The system avoids expensive full re-scans by performing incremental updates based on file hash comparisons:
+
+```typescript
+async function incrementalReindex(projectPath: string) {
+  const currentFiles = await scanDirectory(projectPath);
+  const indexedFiles = await getIndexedFiles();
+
+  // Change Detection
+  const newFiles = currentFiles.filter((f) => !indexedFiles.includes(f));
+  const deletedFiles = indexedFiles.filter((f) => !currentFiles.includes(f));
+  const changedFiles = await detectChangedFiles(indexedFiles); // via checksum
+
+  // Atomic Updates
+  await removeIndexEntries(deletedFiles);
+  await updateIndexEntries(changedFiles);
+  await addIndexEntries(newFiles);
+}
+```
+
+#### Performance Standards
+
+- **Indexed Queries**: <100ms for full-text matched lookups.
+- **Dependency Traversal**: <50ms for 1st-degree relationship lookup.
+- **Index Latency**: Incremental update <500ms for a single file edit.
 
 ### 4.2 Deep Memory System: The Learned History
 
-The system learns from every interaction and stores it in a multi-layered local SQLite database.
+The system builds a persistent knowledge base of project interactions and file relationships using a multi-layered local SQLite database.
 
-| Layer          | Content                                  | Retention Policy       |
-| :------------- | :--------------------------------------- | :--------------------- |
-| **Session**    | Current active conversation (25 msgs)    | Sliding window         |
-| **Short-term** | Recent file analyses and code changes    | Clear on project close |
-| **Long-term**  | Architectural patterns, recurring issues | Permanent (indexed)    |
+#### The 4-Layer Architecture
+
+- **Layer 1: Working Memory (Session)**: React state + Zustand store. Tracks the current conversation (sliding window), recently selected files, and active AI context.
+- **Layer 2: Short-term Memory (Histories)**: SQLite. Stores all conversations in a project session, file analyses performed, and detected code changes.
+- **Layer 3: Long-term Memory (Knowledge Base)**: SQLite + Prisma. Consolidates architectural patterns, recurring issues, project-wide summaries, and user technical habits.
+- **Layer 4: AI Context Builder**: The algorithmic layer that prioritizes relevant memories from layers 1–3 and injects them into Section 4 of the 5-Section Prompt Protocol.
+
+#### Memory System Schema (Prisma)
+
+```prisma
+model FileAnalysis {
+  id              String   @id @default(cuid())
+  projectId       String
+  filePath        String
+  analyzedAt      DateTime @default(now())
+  summary         String   // AI-generated file summary
+  purpose         String?  // The "Why" of the file
+  keyFunctions    String?  // JSON array
+  dependencies    String?  // JSON array of file paths
+  patterns        String?  // JSON anti-patterns detected
+  complexity      Int      @default(5) // 1-10 scale
+  analysisCount   Int      @default(1)
+
+  @@unique([projectId, filePath])
+}
+
+model CodePattern {
+  id          String   @id @default(cuid())
+  projectId   String
+  pattern     String   // Description of the pattern
+  frequency   Int      @default(1)
+  type        String   // 'architecture' | 'coding' | 'anti-pattern'
+  lastSeen    DateTime @updatedAt
+
+  @@unique([projectId, pattern, type])
+}
+```
 
 **Weighted Priority Scoring**:
 The orchestrator prioritizes context retrieval using the following relevance weights:
@@ -232,47 +357,86 @@ The interface is designed as an **AI Control Room**, prioritizing visual clarity
 
 ### 5.1 Visual Language (Hard Constraints)
 
-All UI components **must** conform to the following theme tokens. Ad-hoc colors are strictly prohibited.
+All UI components **must** conform to a unified visual language to preserve trust and cognitive clarity. Ad-hoc colors or timings are strictly prohibited.
 
-- **Theme**: Dark-first (Dark mode is the primary experience). **Indigo/Blue "SaaS default" colors are strictly prohibited.**
-- **Core Palette**:
-- **Background**: Deep Slate (`#0B0E14`)
-- **Surface**: Midnight Blue (`#121826`)
-- **Primary Accent**: Electric Cyan (`#00F2FF`) - Used for AI pulse and active highlights.
-- **Secondary Accent**: Soft Amber (`#FFB800`) - Used for warnings and Decision Locks.
-- **Iconography**: Powered by **Lucide React** with custom system symbols for Decision Locks.
-- **Typography**:
-  - **Headings**: Space Grotesk (Tech-forward feel).
-  - **Body**: Inter (Readability).
-  - **Code**: JetBrains Mono.
+#### Color System (CSS Tokens)
 
-### 5.2 Layout: The 3-Panel Strategy
+```css
+:root {
+  /* Core Palette */
+  --color-bg-primary: #0b0e14; /* Deep Slate background */
+  --color-bg-surface: #121826; /* Midnight Blue surface */
+  --color-bg-panel: #1a1f2b; /* Elevated panel */
 
-The system uses a persistent 3-panel layout to ensure the user never loses context.
+  /* Text Stack */
+  --color-text-primary: #ffffff; /* High contrast */
+  --color-text-secondary: #94a3b8; /* Muted Slate */
+  --color-text-muted: #64748b; /* Dimmed */
 
-1. Left Panel (Explorer): File tree and project structure.
-2. Center Panel (Chat): The primary interaction zone for the AI.
-3. Right Panel (Context/Wiki): Dynamic display of Code Viewer, Wiki pages, or Memory stats.
+  /* Accents */
+  --color-accent-ai: #00f2ff; /* Electric Cyan (AI Pulse) */
+  --color-accent-success: #10b981; /* Emerald */
+  --color-accent-warning: #ffb800; /* Soft Amber (Decision Locks) */
+  --color-accent-error: #ef4444; /* Crimson */
 
-**Focus Mode**: A toggle that collapses the Left and Right panels into a minimal 2-panel view for focused chatting.
+  /* Borders & Focus */
+  --color-border-subtle: rgba(255, 255, 255, 0.05);
+  --color-border-focus: rgba(0, 242, 255, 0.3);
+}
+```
 
-### 5.3 System Status UI
+#### Typography Scale
 
-A mandatory **System Status Bar** must be visible at all times, communicating the "Health" of the AI context:
+- **Headings**: `Space Grotesk` (Tech-forward look).
+- **Body**: `Inter` (Readability optimized).
+- **Code**: `JetBrains Mono` (High-definition coding font).
+- **Size Scale**: `12px (XS) / 14px (SM) / 16px (Base) / 20px (LG) / 24px (XL)`.
 
-- **Indexing Status**: Real-time progress percentage and item count of the Code Indexer.
-- **Memory Health**: Visual indicator (Active/Idle/Pruning) of long-term memory state.
-- **Decision Lock Count**: Number of HARD rules currently being enforced in the prompt.
-- **AI Pulse**: A micro-animation (Electric Cyan) indicating the AI is "thinking" or "observing."
-- **Visual Drift Prevention**: Mandatory automated check against the Design System constraints before any screen render.
+### 5.2 Motion & Interaction Standards
 
-### 5.4 Motion & Glassmorphism
+The interface must feel like a responsive control room. Framer Motion is the required engine.
 
-- **Motion**: Framer Motion is the standard. Timings: 150ms (micro), 300ms (standard), 500ms (complex). Default easing: `circOut` (0.2s).
-- **Glassmorphism**: Restricted to secondary surfaces (menus, tooltips). Must maintain a minimum background blur of `12px` and a border color with `0.1` opacity.
-- **Syntax Highlighting**: Powered by **Shiki** (server-side) with caching based on file hash.
+| Tier       | Duration | Easing      | Usage                               |
+| :--------- | :------- | :---------- | :---------------------------------- |
+| **Micro**  | 150ms    | `circOut`   | Hover states, toggle flips.         |
+| **Fast**   | 250ms    | `easeOut`   | Sidebar collapse, tab switching.    |
+| **Normal** | 400ms    | `easeInOut` | Modal entry, view transitions.      |
+| **System** | 800ms    | `linear`    | Background indexing progress pulse. |
 
-### 5.5 Keyboard Shortcuts (Interaction Registry)
+### 5.3 Glassmorphism Policy (Guardrails)
+
+Glass effects are allowed ONLY on secondary surfaces (overlays, tooltips, panels).
+
+- **Prohibited**: Primary reading surfaces (Chat, Wiki, Code Viewer).
+- **Standards**: Minimum blur `12px`, background opacity `0.6`, border opacity `0.1`.
+
+### 5.4 Iconography & Symbols
+
+Powered by **Lucide React**. Icons must convey system meaning, not decoration. All icons must inherit text color from theme tokens.
+
+| Category          | Symbols                                      | Purpose                                   |
+| :---------------- | :------------------------------------------- | :---------------------------------------- |
+| **System Status** | `Nodes`, `Layers`, `BookOpen`, `ShieldCheck` | Indexing, Memory, Wiki, Decision Locks.   |
+| **AI Status**     | `Circle`, `Loader2`, `Cpu`, `Bot`            | Idle, Thinking, Processing, Ready.        |
+| **File Types**    | `FileCode`, `FileJson`, `FileText`, `Folder` | Source, Config, Documentation, Directory. |
+
+### 5.5 Layout & Status UI
+
+The system uses a persistent 3-panel layout and a mandatory status bar to ensure the user never loses context.
+
+1. **Left Panel (Explorer)**: File tree and project structure.
+2. **Center Panel (Chat)**: primary interaction zone.
+3. **Right Panel (Context/Wiki)**: Dynamic display of Code Viewer, Wiki pages, or Memory stats.
+4. **System Status Bar**: Visible at all times in the header.
+
+**Mandatory Status Indicators**:
+
+- **Indexing Status**: Real-time progress and item count.
+- **Memory Health**: Visual indicator (Active/Idle/Pruning).
+- **Decision Lock Count**: Number of active HARD rules.
+- **AI Pulse**: Micro-animation (Electric Cyan) during processing.
+
+### 5.6 Keyboard Shortcuts (Interaction Registry)
 
 The system prioritizes keyboard-driven navigation for power users. All shortcuts **must** be implemented with global listener guards to prevent conflicts with native OS commands.
 
@@ -302,28 +466,139 @@ The system is built for local-first performance and enterprise-grade code intell
 - **AI SDK**: `z-ai-web-dev-sdk` for model interaction and streaming.
 - **Desktop (Phase 2)**: Electron wrapper for native file system access.
 
-### 6.2 API Registry (Mandatory Endpoints)
+### 6.2 Technical Registry: API & State
 
-| Endpoint                         | Method | Purpose                                                   |
-| :------------------------------- | :----- | :-------------------------------------------------------- |
-| `/api/context/build-prompt`      | POST   | Constructs 5-section prompt with token budgeting.         |
-| `/api/context/validate-response` | POST   | Intercepts and validates AI output vs Locks.              |
-| `/api/files/tree`                | GET    | Returns the recursive project file structure.             |
-| `/api/files/content`             | GET    | Retrieves (read-only) file content with chunking support. |
-| `/api/index/status`              | GET    | Returns current indexing progress and stats.              |
-| `/api/wiki/generate`             | POST   | Triggers the auto-documentation pipeline.                 |
+The system maintains a rigid technical surface between the frontend and the local-first backend services.
 
-### 6.3 Security & Privacy Policy
+#### REST API Registry
+
+| Category    | Endpoint                           | Method | Purpose                                            |
+| :---------- | :--------------------------------- | :----- | :------------------------------------------------- |
+| **Context** | `/api/context/build-prompt`        | POST   | Constructs 5-section prompt using token budget.    |
+|             | `/api/context/validate-response`   | POST   | Intercepts and validates AI output vs Locks.       |
+|             | `/api/context/decision-locks`      | POST   | Create or update persistent Decision Locks.        |
+|             | `/api/context/decision-locks/:id`  | PUT    | Activate/deactivate specific governance rules.     |
+|             | `/api/context/violations/:project` | GET    | Retrieve history of AI governance violations.      |
+| **Memory**  | `/api/memory/project/:id`          | GET    | Retrieve all project-level patterns and issues.    |
+|             | `/api/memory/file/:path`           | GET    | Get deep analysis and context for a specific file. |
+|             | `/api/memory/search`               | POST   | Search across conversations, patterns, and issues. |
+|             | `/api/memory/ai-context`           | GET    | Optimized context fragments for current task.      |
+| **Index**   | `/api/index/status`                | GET    | Current progress/health of the SQLite FTS5 index.  |
+|             | `/api/index/search`                | POST   | High-performance full-text and symbol search.      |
+|             | `/api/index/dependencies`          | GET    | Returns import/export graph for selected files.    |
+| **Wiki**    | `/api/wiki/generate`               | POST   | Triggers the auto-documentation pipeline.          |
+|             | `/api/wiki/:project/pages`         | GET    | Returns all generated and user-annotated pages.    |
+
+#### 6.3 Functional State Store (Zustand)
+
+The frontend uses a single-source-of-truth store to manage the complex application lifecycle:
+
+```typescript
+interface AppState {
+  // File System & Navigation
+  fileTree: TreeNode[];
+  selectedFiles: string[];
+  currentPath: string;
+
+  // Intelligence & Memory
+  messages: Message[];
+  projectMemory: ProjectMemory | null;
+  fileAnalyses: Map<string, FileAnalysis>;
+  patterns: CodePattern[];
+  issues: IssueMemory[];
+
+  // Code Indexing & Search
+  codeIndex: {
+    isIndexing: boolean;
+    indexingProgress: Progress | null;
+    totalSymbols: number;
+    totalDependencies: number;
+  };
+  searchResults: SearchResult[];
+
+  // Wiki System
+  wikiPages: WikiPage[];
+  currentWikiPage: WikiPage | null;
+  isGeneratingWiki: boolean;
+
+  // Actions
+  startIndexing: (type: 'full' | 'incremental') => Promise<void>;
+  searchCode: (query: string, f?: Filters) => Promise<SearchResult[]>;
+  loadWikiPage: (slug: string) => Promise<void>;
+  validateResponse: (output: string) => Promise<ValidationResult>;
+}
+```
+
+### 6.4 Security & Privacy Policy
 
 - **Read-Only Access**: The system never modifies source code directly without explicit user approval.
 - **Local-First**: All metadata (Index, Memory, Wiki) is stored on the user's machine.
 - **Optional Hub Encryption**: Supports AES-256 encryption for the entire SQLite database using a passphrase-derived key.
 - **Data Portability**: Users can export their project intelligence as a signed `.ai-project-bundle`.
 
-### 6.4 Implementation Roadmap
+### 6.5 Network Governance (WFP)
 
-- **Sprint 0**: Context Orchestrator Service (Mandatory Brain).
-- **Sprint 1**: Code Indexing & Deep Memory Foundation.
-- **Sprint 2**: UI Shell & Design System Implementation.
-- **Sprint 3**: Wiki System & Proactive Insights.
-- **Sprint 4**: Integration, Performance Polish, and Electron Wrapper.
+For enterprise security, the system implements a **Windows Filtering Platform (WFP)** driver for strict network quarantine:
+
+- **Primary**: Bundled WFP Callout Driver for kernel-mode packet inspection.
+- **Fallback**: User-mode WFP API for basic port-blocking if the driver is unavailable.
+- **Policy**: All AI-related traffic is routed through a managed socket; non-compliant outbound connections are dropped.
+
+### 6.6 Implementation Roadmap (Phased)
+
+The development is divided into four critical phases, prioritizing the "stateless brain" and "cognitive body."
+
+#### Phase 1: Web Application Core (Current)
+
+##### Sprint 0: Context Orchestrator (The Brain)
+
+- [ ] Implement DecisionLock database model & `ViolationLedger`.
+- [ ] Build `ConflictDetector` & `TokenBudgetManager` classes.
+- [ ] Implement PromptBuilder with 5-section protocol.
+- [ ] Add decision lock extraction and injection logic.
+- [ ] Create REST endpoints for prompt management and validation.
+
+##### Sprint 1: Cognitive Infrastructure (The Body)
+
+- [ ] Build SQLite FTS5 Indexer with symbols/imports/exports extraction.
+- [ ] Implement 4-layer memory storage (Prisma/SQLite).
+- [ ] Build incremental reindexing logic and background file scanner.
+- [ ] Implement dependency graph analyzer and search API.
+
+##### Sprint 2: UI/UX & Design System
+
+- [ ] Implement App Shell with 3-panel layout and Focus Mode.
+- [ ] Integrate CSS Tokens and shadcn/ui.
+- [ ] Add Framer Motion transitions and background progress indicators.
+- [ ] Build Keyboard Shortcut registry and interaction listeners.
+
+##### Sprint 3: Wiki & Proactive Insights
+
+- [ ] Implement auto-generation pipeline for documentation.
+- [ ] Build bi-directional linking between Wiki and Source.
+- [ ] Implement low-noise proactive alerting for pattern/issue detection.
+
+#### Phase 2: Native Capabilities (Desktop)
+
+##### Sprint 4: Electron Integration
+
+- [ ] Initialize Electron wrapper and native file system bridge.
+- [ ] Implement native window management and menu bar integration.
+- [ ] Package and bundle for Windows distribution.
+
+##### Sprint 5: Network Governance (WFP)
+
+- [ ] Implement WFP Callout Driver for network quarantine.
+- [ ] Build user-mode fallback API for non-driver environments.
+
+#### Phase 3: Enterprise & Security
+
+##### Sprint 6: Advanced Encryption
+
+- [ ] Implement AES-256 database encryption.
+- [ ] Build signed `.ai-project-bundle` export/import utility.
+
+##### Sprint 7: Scale & Performance
+
+- [ ] Multi-worker indexing support for 100K+ files.
+- [ ] Implement vector similarity search for semantic retrieval.
