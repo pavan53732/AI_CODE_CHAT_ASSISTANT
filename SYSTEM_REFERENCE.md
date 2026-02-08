@@ -105,11 +105,22 @@ In the event of metadata contradictions:
 
 ### 2.3 Decision Lock Extraction Policy
 
-The system autonomously identifies and persists new architectural constraints from User/AI interactions:
+The system autonomously identifies and persists new architectural constraints from User/AI interactions using the **Hard Constraint Heuristic**:
 
-1. **Extraction Trigger**: Triggers whenever the user explicitly confirms an architectural choice or when the AI detects a recurring pattern that meets the "Hard Constraint" heuristic.
-2. **Lock Criteria**: To qualify as a Decision Lock, a rule must be **technical**, **scope-defined**, and **machine-verifiable**.
-3. **Authority logic**: User-created locks always overrule AI-extracted locks. Duplicate locks are merged, prioritizing the most specific scope.
+#### 2.3.1 Extraction Heuristics
+
+Rules are elevated from "observations" to **HARD Locks** if they meet at least two of the following criteria:
+
+1. **Explicit Imperatives**: Use of absolute keywords (e.g., `must`, `never`, `always`, `forbidden`, `requirement`).
+2. **Repetition Threshold**: The same architectural pattern or constraint is mentioned or applied in **≥3 distinct conversation turns**.
+3. **User Confirmation**: The user explicitly replies with "correct", "yes", or "save this" after the AI proposes a rule.
+4. **Project Genesis**: The rule is defined in a `README.md`, `CONTRIBUTING.md`, or a configuration file (e.g., `tsconfig.json`).
+
+#### 2.3.2 Extraction Authority
+
+- **AI Proposal**: The AI may only _propose_ HARD locks. No HARD lock is truly active until the user confirms or the heuristic score exceeds a threshold of 0.9.
+- **SOFT Locks**: The AI can autonomously create SOFT locks for stylistic preferences (e.g., "prefers early returns").
+- **Conflict Resolution**: User-created locks always overrule AI-extracted locks. Duplicate locks are merged, prioritizing the most specific scope.
 
 ### 2.4 SOFT Rule Enforcement Policy
 
@@ -121,6 +132,14 @@ Unlike HARD rules, SOFT rules guide AI behavior without hard blocking. Their enf
   - **WARN**: The user is notified of the violation.
   - **ALLOW**: The response is delivered, but the violation is logged in the `ViolationLedger`.
   - **LOG**: Every SOFT violation is tracked for future "Low-Noise" proactivity analysis.
+
+#### 2.4.4 Violation Escalation & Noise Suppression
+
+The system learns from repeated violations to harden governance over time:
+
+1. **Escalation Threshold**: If a **SOFT** rule is violated **≥3 times** within a 24-hour window, the system automatically prompts the user to elevate it to a **HARD Lock**.
+2. **Noise Suppression**: Identical violation alerts are suppressed for **60 minutes** after the first notification to prevent UI fatigue.
+3. **Audit Readiness**: All suppressed alerts are still recorded in the `ViolationLedger` for background pattern analysis.
 
 ### 2.5 Governance Interfaces
 
@@ -347,24 +366,32 @@ async function incrementalReindex(projectPath: string) {
 }
 ```
 
-#### 4.1.4 Indexing Mode Thresholds
+#### 4.1.5 Search Relevance & Scoring Formula
 
-The system dynamically adjusts its indexing strategy based on the codebase size to optimize resource consumption:
+The system employs a multi-signal scoring model to rank retrieval results. The final score $S$ for a candidate fact is calculated as:
 
-| Repository Size        | Mode       | Execution Strategy                               |
-| :--------------------- | :--------- | :----------------------------------------------- |
-| **< 1,000 Files**      | Instant    | Full indexing on Project Open (Main Thread)      |
-| **1,000–10,000 Files** | Fast       | Parallel full scan + Quick reindex (Worker Pool) |
-| **> 10,000 Files**     | Enterprise | Chunked indexing + Priority queue + Multi-worker |
+$$S = (W_{type} \times S_{semantic}) + (W_{recency} \times f(age)) + S_{bonus}$$
 
-#### 4.1.5 Search Relevance & Ranking Rules
+- **Weight Values ($W_{type}$)**:
+  - **Index Fact**: 1.0 (Canonical)
+  - **Issue Memory**: 0.8 (Contextual Debt)
+  - **Wiki Page**: 0.6 (Narrative)
+  - **Archived Chat**: 0.4 (Historical)
+- **Recency Decay ($f(age)$)**: Linear decay over 30 days. Facts older than 30 days are capped at a $0.2$ multiplier.
+- **Bonus Signals ($S_{bonus}$)**:
+  - +0.2 if the fact belongs to the currently active file.
+  - +0.1 for every 5 occurrences of the fact in codebase patterns.
+  - -0.3 if the fact is associated with a resolved `IssueMemory`.
+- **Normalization**: All partial scores are normalized to a $[0, 1]$ range before fusion.
 
-The system employs a weighted fusion model for search results, ensuring the most semantically relevant facts surface first:
+#### 4.1.6 File Handling Fallback Rules
 
-- **Ranking Priority**: **Index Facts** (Ground Truth) > **Deep Memory** (Learned) > **Wiki Narrative** (Doc).
-- **Positive Weighting**: Exact symbol matches, active file context, and high-frequency code patterns.
-- **Negative Weighting**: Old conversation fragments (>30 days), deleted file metadata, and soft rule violations.
-- **Tie-Break Rule**: In the event of a score tie, the **Index Fact** (most recent file hash) always wins.
+Differentiated processing for edge-case files:
+
+- **Unknown Extensions**: AI performs a "Peek Scan" (first 100 lines). If text-like, treated as **Text** category; otherwise, **Binary** (Metadata Only).
+- **Large Artifacts (>5MB Source, >10MB Doc)**: AI excludes the full content from semantic indexing. Only **Symbols** and **Structural Metadata** are extracted.
+- **Mixed Formats (`.pdf`, `.docx`)**: Excluded from direct parsing. The system relies on external conversion (if available) or processes as **Binary**.
+- **Generated Files (`node_modules`, `dist`, `.next`)**: Automatically excluded from all indexing and search operations via the global `.ai-ignore` policy.
 
 ### 4.2 Deep Memory System: The Learned History
 
@@ -406,6 +433,36 @@ model CodePattern {
 
   @@unique([projectId, pattern, type])
 }
+
+model IssueMemory {
+  id              String   @id @default(cuid())
+  projectId       String
+  title           String
+  description     String
+  severity        String   // CRITICAL | HIGH | MEDIUM | LOW
+  status          String   // OPEN | RESOLVED | ARCHIVED
+  source          String   // conversation_id | ai_scan
+  relatedFiles    String   // JSON array of file paths
+  detectedAt      DateTime @default(now())
+  resolvedAt      DateTime?
+  reopenedCount   Int      @default(0)
+
+  @@index([projectId, status, severity])
+}
+
+#### 4.2.2 Issue Lifecycle & Severity Scale
+
+The system tracks technical debt and bugs through a structured **Issue Lifecycle**:
+
+- **CRITICAL**: Security vulnerabilities or kernel-mode failures (WFP). Requires immediate proactive alert.
+- **HIGH**: Logic flaws or architectural violations. surfaced in Section 4 of every prompt.
+- **MEDIUM**: Code smells or inconsistent patterns. Surfaced if relevant to the current file.
+- **LOW**: Minor stylistic deviations. Logged for background proactivity scanning.
+
+**Lifecycle Transitions**:
+1. **OPEN**: Issue detected and confirmed by AI or user.
+2. **RESOLVED**: AI detects the fix and verifies it against the original failure context.
+3. **ARCHIVED**: Resolved issues are moved to the archive after 30 days but remain searchable for pattern detection.
 ```
 
 #### Memory Retention Policies
@@ -444,7 +501,9 @@ The system monitors user activity and system state to trigger automated analysis
 
 #### 4.2.4 AI Proactivity Guardrails (HARD)
 
-To prevent "AI Noise" and maintain a focused development environment, the AI is suppressed from speaking proactively unless specific technical thresholds are met:
+To prevent "AI Noise" and maintain a focused development environment, the AI is suppressed from speaking proactively unless specific technical thresholds are met.
+
+**Enforcement Layer**: The **Context Orchestrator** acts as the single gatekeeper for proactivity. Before any proactive message is generated, the Orchestrator evaluates the current state against the suppression rules. This occurs **server-side** (before the UI layer) to ensure a silence guarantee.
 
 1. **High-Severity Discovery**: Proactive alert if a security vulnerability or critical logic failure is detected.
 2. **Structural Pattern Detection**: AI speaks if a recurring pattern/anti-pattern is found in **≥3 separate files**.
@@ -474,7 +533,17 @@ To protect user-authored content, the Wiki system adheres to the following mutat
 2. **Annotation Preservation**: AI suggestions must be presented in separate `> [!NOTE]` or `## AI Insights` blocks and never overwrite user text.
 3. **Draft Mode**: All AI-proposed Wiki changes must be staged in a "Draft" or "Review" state before merging into the canonical Wiki page.
 
-#### 4.4.2 File Type Processing Matrix
+#### 4.4.2 Wiki Draft Lifecycle & Approval
+
+To prevent Wiki divergence, drafts follow a managed lifecycle:
+
+- **Approval Authority**:
+  - **User-Authored Pages**: AI drafts **must** be manually approved by the user.
+  - **AI-Generated Overviews**: AI drafts can be "Auto-Merged" if the change is a pure technical update (e.g., new file added) with no conflict.
+- **Expiration**: Drafts expire and are deleted after **7 days** of inactivity if not merged.
+- **Search Participation**: Drafts are **excluded** from Section 3 (INDEX_FACTS) of the prompt protocol but are searchable in the UI as "Pending Insights" (Score Multiplier: 0.2).
+
+#### 4.4.3 File Type Processing Matrix
 
 The system applies differentiated processing strategies based on file type to maximize context quality:
 
@@ -499,11 +568,19 @@ A valid bundle must contain the following manifest components:
 - **Governance**: Active and historical Decision Locks and Violation Logs.
 - **Config**: Project-specific AI settings and token budget preferences.
 
-#### 4.5.2 Versioning & Compatibility
+#### 4.5.3 Bundle Import Conflict Resolution
 
-- **Forward Compatibility**: Version $N$ of the system must be able to import bundles from Version $N-1$.
-- **Partial Import**: Users may choose to import only specific layers (e.g., "Memory Only" or "Wiki Only").
-- **Signature Validation**: Bundles are rejected if the SHA-256 manifest signature fails verification.
+Importing a bundle is a non-destructive mutation. Conflicts are resolved according to the following hierarchy:
+
+1. **Decision Locks**:
+   - **Local > Import**: If a Decision Lock at the same scope exists locally, the local rule is preserved.
+   - **System Alert**: The user is notified of any Divergent Hard Locks during the import preview.
+2. **Wiki Pages**:
+   - **User Annotation Wins**: If both local and import documents contain user annotations, the **Local** version is preserved, and the imported content is staged as a **Draft**.
+   - **Auto-Merge**: Purely AI-generated modules are auto-merged if the import version is newer (based on hash).
+3. **Deep Memory**:
+   - **Deduplication**: Identical Issue Memories or patterns are merged; frequency counts are combined.
+   - **Priority**: On import, the **Index > Memory > Wiki** ranking still applies to resolve any logic contradictions.
 
 ---
 
